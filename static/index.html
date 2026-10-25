@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Spark Analytics Dashboard</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, sans-serif;
+            padding: 20px;
+            background: #f4f4f9;
+            color: #333;
+        }
+
+        .container {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+
+        .card {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            width: 45%;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        input,
+        select,
+        button {
+            padding: 8px;
+            margin: 5px 0;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        button:hover {
+            background: #0056b3;
+        }
+
+        .metric {
+            font-weight: bold;
+            color: #d9534f;
+            background: #fdf0ef;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.9em;
+            margin-bottom: 10px;
+            display: inline-block;
+        }
+
+        .nav-btn {
+            display: inline-block;
+            padding: 10px 15px;
+            background: #28a745;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            font-weight: bold;
+        }
+
+        /* CSS Tabel Dalam Card */
+        .table-wrapper {
+            overflow-x: auto;
+            max-height: 350px;
+            margin-top: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            font-size: 13px;
+        }
+
+        th,
+        td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+
+        th {
+            background-color: #007bff;
+            color: white;
+            position: sticky;
+            top: 0;
+        }
+
+        tr:nth-child(even) {
+            background-color: #f2f2f2;
+        }
+    </style>
+</head>
+
+<body>
+    <h2>🩺 Dashboard Analisis Medis (Apache Spark)</h2>
+    <a href="/tables" class="nav-btn">Lihat Full Raw Data ➔</a>
+
+    <div class="container">
+
+        <!-- DataFrame Card -->
+        <div class="card">
+            <h3>Filter Rekam Medis (DataFrame)</h3>
+            <label>Radius Tumor Min:</label>
+            <input type="number" id="radiusInput" value="20.0" step="0.5">
+            <select id="diagInput">
+                <option value="M">Malignant (Ganas)</option>
+                <option value="B">Benign (Jinak)</option>
+            </select>
+            <button onclick="fetchPatients()">Filter Data</button>
+
+            <div id="df-metrics" style="margin-top: 15px;"></div>
+
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID Pasien</th>
+                            <th>Diagnosis</th>
+                            <th>Radius Mean</th>
+                        </tr>
+                    </thead>
+                    <tbody id="df-body">
+                        <tr>
+                            <td colspan="3">Siap memproses data...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- RDD Card -->
+        <div class="card">
+            <h3>Pencarian Teks Patologi (RDD)</h3>
+            <label>Cari Istilah Medis:</label>
+            <input type="text" id="keywordInput" value="tumor">
+            <button onclick="searchKeyword()">Cari Teks</button>
+
+            <div id="rdd-metrics" style="margin-top: 15px;"></div>
+
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th style="width: 40px;">No</th>
+                            <th>Cuplikan Dokumen Patologi</th>
+                        </tr>
+                    </thead>
+                    <tbody id="rdd-body">
+                        <tr>
+                            <td colspan="2">Siap memproses RDD...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+    </div>
+
+    <script>
+        async function fetchPatients() {
+            document.getElementById('df-body').innerHTML = '<tr><td colspan="3">Mengeksekusi Spark SQL...</td></tr>';
+            const radius = document.getElementById('radiusInput').value;
+            const diag = document.getElementById('diagInput').value;
+
+            try {
+                const res = await fetch(`/api/patients/filter?min_radius=${radius}&diag_type=${diag}`);
+                const json = await res.json();
+
+                document.getElementById('df-metrics').innerHTML = `
+                    <span class="metric">⏱️ Waktu Eksekusi: ${json.execution_time_sec} detik</span>
+                    <span class="metric">📊 Ditemukan: ${json.total_found} Pasien</span>
+                `;
+
+                let rowsHTML = '';
+                if (json.data && json.data.length > 0) {
+                    json.data.forEach(row => {
+                        rowsHTML += `<tr>
+                            <td>${row.id}</td>
+                            <td>${row.diagnosis}</td>
+                            <td>${row.radius_mean}</td>
+                        </tr>`;
+                    });
+                } else {
+                    rowsHTML = '<tr><td colspan="3">Tidak ada data pasien yang sesuai kriteria.</td></tr>';
+                }
+                document.getElementById('df-body').innerHTML = rowsHTML;
+
+            } catch (err) {
+                document.getElementById('df-body').innerHTML = `<tr><td colspan="3">Error: ${err.message}</td></tr>`;
+            }
+        }
+
+        async function searchKeyword() {
+            document.getElementById('rdd-body').innerHTML = '<tr><td colspan="2">Menjalankan RDD MapReduce...</td></tr>';
+            const word = document.getElementById('keywordInput').value;
+
+            try {
+                const res = await fetch(`/api/pathology/search?keyword=${word}`);
+                const json = await res.json();
+
+                document.getElementById('rdd-metrics').innerHTML = `
+                    <span class="metric">⏱️ Waktu Eksekusi: ${json.execution_time_sec} detik</span>
+                    <span class="metric">📊 Preview Max 50 Baris</span>
+                `;
+
+                let rowsHTML = '';
+                if (json.data && json.data.length > 0) {
+                    json.data.forEach((line, index) => {
+                        // Fitur stabilo kuning otomatis untuk kata yang dicari
+                        const regex = new RegExp(json.keyword, 'gi');
+                        const highlightedText = line.replace(regex, match => `<strong style="background:yellow; color:#d9534f; padding:0 3px;">${match}</strong>`);
+
+                        rowsHTML += `<tr>
+                            <td>${index + 1}</td>
+                            <td>${highlightedText}</td>
+                        </tr>`;
+                    });
+                } else {
+                    rowsHTML = `<tr><td colspan="2">Kata "${json.keyword}" tidak ditemukan.</td></tr>`;
+                }
+                document.getElementById('rdd-body').innerHTML = rowsHTML;
+
+            } catch (err) {
+                document.getElementById('rdd-body').innerHTML = `<tr><td colspan="2">Error: ${err.message}</td></tr>`;
+            }
+        }
+
+        window.onload = () => {
+            fetchPatients();
+            searchKeyword();
+        };
+    </script>
+</body>
+
+</html>

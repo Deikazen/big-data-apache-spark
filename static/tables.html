@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Raw Data Tables - Spark</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, sans-serif;
+            padding: 20px;
+            background: #f4f4f9;
+            color: #333;
+        }
+
+        .nav {
+            margin-bottom: 20px;
+        }
+
+        .nav a {
+            padding: 10px 15px;
+            background: #6c757d;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+
+        .nav a:hover {
+            background: #5a6268;
+        }
+
+        .table-container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            overflow-x: auto;
+            max-height: 500px;
+        }
+
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            font-size: 13px;
+        }
+
+        th,
+        td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+
+        th {
+            background-color: #007bff;
+            color: white;
+            position: sticky;
+            top: 0;
+        }
+
+        tr:nth-child(even) {
+            background-color: #f2f2f2;
+        }
+
+        .badge {
+            background: #ffc107;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="nav">
+        <a href="/">⬅ Kembali ke Dashboard Analytics</a>
+    </div>
+
+    <h2>Tabel Dataset Apache Spark</h2>
+
+    <!-- Tabel DataFrame -->
+    <div class="table-container">
+        <h3>Metadata Pasien Kanker (DataFrame) <span class="badge">Preview 100 Baris</span></h3>
+        <table id="df-table">
+            <thead id="df-head"></thead>
+            <tbody id="df-body">
+                <tr>
+                    <td>Sedang memuat data terstruktur dari Spark...</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Tabel RDD -->
+    <div class="table-container">
+        <h3>Laporan Patologi (RDD Raw Text) <span class="badge">Preview 100 Baris</span></h3>
+        <table>
+            <thead>
+                <tr>
+                    <th style="width: 50px;">Baris</th>
+                    <th>Teks Dokumen (Unstructured Data)</th>
+                </tr>
+            </thead>
+            <tbody id="rdd-body">
+                <tr>
+                    <td colspan="2">Sedang memuat data tidak terstruktur dari Spark...</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        async function fetchDataFrame() {
+            try {
+                const res = await fetch('/api/patients/all');
+                const json = await res.json();
+
+                if (!res.ok || !json.data) throw new Error(json.detail || "Server gagal mengirim data terstruktur");
+
+                const thead = document.getElementById('df-head');
+                let headHTML = '<tr>';
+                json.columns.forEach(col => { headHTML += `<th>${col}</th>`; });
+                headHTML += '</tr>';
+                thead.innerHTML = headHTML;
+
+                const tbody = document.getElementById('df-body');
+                let bodyHTML = '';
+                json.data.forEach(row => {
+                    bodyHTML += '<tr>';
+                    json.columns.forEach(col => {
+                        bodyHTML += `<td>${row[col] !== null ? row[col] : ''}</td>`;
+                    });
+                    bodyHTML += '</tr>';
+                });
+                tbody.innerHTML = bodyHTML;
+            } catch (error) {
+                document.getElementById('df-body').innerHTML = `<tr><td>Error memuat DataFrame: ${error.message}</td></tr>`;
+            }
+        }
+
+        async function fetchRDD() {
+            try {
+                const res = await fetch('/api/pathology/all');
+                const json = await res.json();
+
+                if (!res.ok || !json.data) throw new Error(json.detail || "Server gagal mengirim data RDD");
+
+                const tbody = document.getElementById('rdd-body');
+                let bodyHTML = '';
+                json.data.forEach((line, index) => {
+                    bodyHTML += `<tr>
+                                    <td>${index + 1}</td>
+                                    <td>${line}</td>
+                                 </tr>`;
+                });
+                tbody.innerHTML = bodyHTML;
+            } catch (error) {
+                document.getElementById('rdd-body').innerHTML = `<tr><td colspan="2">Error memuat RDD: ${error.message}</td></tr>`;
+            }
+        }
+
+        window.onload = () => {
+            fetchDataFrame();
+            fetchRDD();
+        };
+    </script>
+</body>
+
+</html>
