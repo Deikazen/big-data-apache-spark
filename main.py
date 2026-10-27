@@ -3,16 +3,15 @@ import pandas as pd
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from routers import analytics_api, dataframe_api, rdd_api
+from routers import analytics_api, dataframe_api, rdd_api, stream_api
 
 os.environ["PYSPARK_PYTHON"] = "python"
 
 app = FastAPI(title="Hybrid Spark & Hadoop Dashboard")
 analytics_api.initialise_metrics(app)
+stream_api.initialise_streaming(app)
 
-# === PILIH MODE DI SINI SECARA LANGSUNG ===
-# Ubah nilai di bawah menjadi "hadoop" atau "spark"
-# Nilai ini juga dapat di-override lewat environment variable EXEC_MODE
+
 EXEC_MODE = os.getenv("EXEC_MODE", "hadoop").lower()
 app.state.execution_mode = EXEC_MODE
 
@@ -61,10 +60,12 @@ elif EXEC_MODE == "spark":
     df = spark.read.csv("data/breast_cancer_data.csv",
                         header=True, inferSchema=True)
     df.createOrReplaceTempView("patients")
+    app.state.patients_spark_df = df
 
 app.include_router(dataframe_api.router)
 app.include_router(rdd_api.router)
 app.include_router(analytics_api.router)
+app.include_router(stream_api.router)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 

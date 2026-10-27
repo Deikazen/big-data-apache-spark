@@ -529,6 +529,32 @@ curl "http://localhost:8000/api/pathology/search?keyword=tumor"
 curl "http://localhost:8000/api/pathology/all?limit=20"
 ```
 
+
+## Simulasi Data Real-Time (Streaming)
+
+Proyek ini dilengkapi dengan script simulator data real-time: [stream_producer.py](stream_producer.py). Script ini membaca data referensi dari file CSV (reast_cancer_data.csv dan mtsamples.csv) lalu mengirimkan baris data secara berkala (streaming) ke server FastAPI.
+
+Data yang dialirkan akan langsung ditangkap oleh server pada engine yang sedang aktif:
+- **Mode Spark:** Data baru di-union secara dinamis ke DataFrame Spark dan temporary view patients, serta buffer teks RDD.
+- **Mode Hadoop:** Data baru di-inject ke DataFrame pasien Hadoop dan buffer teks HDFS.
+
+### Menjalankan Simulator Streaming
+
+Pastikan server FastAPI sudah menyala di http://localhost:8000, lalu di terminal terpisah jalankan:
+
+`powershell
+# Alirkan data pasien dan teks patologi secara bergantian (default 1.5 detik per data)
+python stream_producer.py
+
+# Mengatur interval pengiriman data (misal 1 detik)
+python stream_producer.py --interval 1.0
+
+# Hanya mengirim data pasien kanker sebanyak 50 data
+python stream_producer.py --type patients --count 50 --interval 2.0
+`
+
+Dashboard web di http://localhost:8000/ memiliki panel **Real-Time Data Stream Monitor** yang akan menampilkan feed live dan otomatis memperbarui tabel saat data baru masuk.
+
 ## Docker Hadoop HDFS
 
 Jalankan cluster HDFS:

@@ -22,12 +22,19 @@
             background: white;
             padding: 20px;
             border-radius: 8px;
-            width: 45%;
+            width: calc(50% - 30px);
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            box-sizing: border-box;
+        }
+
+        .full-card {
+            width: 100% !important;
         }
 
         .analytics-card {
             width: 100%;
+            background: #ffffff;
+            border-left: 6px solid #2b7bb9;
         }
 
         .analytics-header {
@@ -38,39 +45,106 @@
             flex-wrap: wrap;
         }
 
+        .analytics-header h3 {
+            margin: 0;
+            color: #1f2d3d;
+        }
+
+        .legend {
+            display: flex;
+            gap: 14px;
+            font-size: 0.85em;
+            color: #555;
+        }
+
+        .legend span {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .legend-dot {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 3px;
+        }
+
         .analytics-subtitle {
-            color: #667085;
-            margin: 0 0 14px;
-            font-size: 0.92em;
+            margin: 6px 0 16px;
+            color: #666;
+            font-size: 0.9em;
         }
 
         .chart-grid {
             display: grid;
-            grid-template-columns: repeat(2, minmax(260px, 1fr));
-            gap: 18px;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 16px;
         }
 
         .chart-panel {
-            border: 1px solid #e3e8ef;
-            border-radius: 8px;
-            padding: 14px;
-            background: #fbfcfe;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 12px 14px;
         }
 
-        .chart-title { margin: 0 0 12px; font-size: 1em; }
-        .chart-row { display: grid; grid-template-columns: 76px 1fr 68px; gap: 8px; align-items: center; margin: 9px 0; font-size: 0.86em; }
-        .bar-track { height: 22px; background: #e9eef5; border-radius: 5px; overflow: hidden; }
-        .bar { height: 100%; min-width: 0; border-radius: 5px; transition: width .25s ease; }
-        .bar.spark { background: #2185d0; }
-        .bar.hadoop { background: #e49b22; }
-        .bar-value { text-align: right; font-variant-numeric: tabular-nums; color: #344054; }
-        .no-measurement { color: #98a2b3; font-style: italic; font-size: .9em; }
-        .legend { display: flex; gap: 14px; font-size: .82em; color: #475467; }
-        .legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; }
+        .chart-title {
+            margin: 0 0 10px;
+            font-size: 0.95em;
+            color: #334155;
+            font-weight: 600;
+        }
 
-        @media (max-width: 700px) {
-            .card { width: 100%; }
-            .chart-grid { grid-template-columns: 1fr; }
+        .chart-row {
+            display: grid;
+            grid-template-columns: 80px 1fr 110px;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 8px;
+            font-size: 0.85em;
+        }
+
+        .chart-row:last-child {
+            margin-bottom: 0;
+        }
+
+        .bar-track {
+            background: #e2e8f0;
+            border-radius: 4px;
+            overflow: hidden;
+            height: 14px;
+        }
+
+        .bar {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.4s ease;
+        }
+
+        .bar.spark {
+            background: #2185d0;
+        }
+
+        .bar.hadoop {
+            background: #e49b22;
+        }
+
+        .bar-value {
+            font-variant-numeric: tabular-nums;
+            color: #334155;
+            text-align: right;
+            line-height: 1.1;
+        }
+
+        .bar-value small {
+            color: #64748b;
+            font-size: 0.8em;
+        }
+
+        .no-measurement {
+            color: #94a3b8;
+            font-style: italic;
         }
 
         input,
@@ -158,15 +232,77 @@
 
     <div class="container">
 
+        <!-- Real-Time Stream Monitor Card -->
+        <div class="card full-card" style="border-left: 6px solid #10b981;">
+            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                <div>
+                    <h3 style="margin: 0; display: inline-flex; align-items: center; gap: 8px;">
+                        <span>📡 Real-Time Data Stream Monitor</span>
+                        <span id="stream-status-badge" style="font-size: 0.7em; padding: 3px 8px; border-radius: 12px; background: #e2e8f0; color: #475569;">
+                            ⚪ Live Monitor Standby
+                        </span>
+                    </h3>
+                    <p style="margin: 4px 0 0; color: #64748b; font-size: 0.88em;">
+                        Data dialirkan oleh script <code>stream_producer.py</code>. Engine aktif: <strong id="stream-engine-label">-</strong>.
+                    </p>
+                </div>
+                <div style="font-size: 0.85em; display: flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+                    <label style="cursor: pointer; user-select: none; font-weight: bold; background: #f1f5f9; padding: 5px 10px; border-radius: 5px; border: 1px solid #cbd5e1;">
+                        <input type="checkbox" id="streamPollingToggle" onchange="togglePolling(this.checked)"> 🔴 Pantau Stream (Live Polling)
+                    </label>
+                    <label style="cursor: pointer; user-select: none;">
+                        <input type="checkbox" id="autoRefreshToggle" checked> Auto-refresh tabel
+                    </label>
+                    <button onclick="pollStreamStatus(true)" style="padding: 5px 10px; font-size: 0.85em; background: #64748b;">🔄 Cek Manual</button>
+                </div>
+            </div>
+
+            <!-- Grid Metrik Latensi & Durasi Proses Real-Time -->
+            <div style="margin-top: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px;">
+                <div style="background: #f8fafc; padding: 10px 14px; border-radius: 6px; border: 1px solid #e2e8f0;">
+                    <div style="font-size: 0.78em; color: #64748b;">Total Data Masuk:</div>
+                    <div id="stream-count-total" style="font-size: 1.35em; font-weight: bold; color: #0284c7;">0</div>
+                    <div style="font-size: 0.75em; color: #94a3b8;"><span id="stream-count-patients">0</span> pasien | <span id="stream-count-pathology">0</span> teks</div>
+                </div>
+                <div style="background: #f8fafc; padding: 10px 14px; border-radius: 6px; border: 1px solid #e2e8f0;">
+                    <div style="font-size: 0.78em; color: #64748b;">Waktu Ingest Terakhir:</div>
+                    <div id="stream-last-latency" style="font-size: 1.35em; font-weight: bold; color: #dc2626;">-</div>
+                    <div style="font-size: 0.75em; color: #94a3b8;">jam: <span id="stream-last-time">-</span></div>
+                </div>
+                <div style="background: #fefce8; padding: 10px 14px; border-radius: 6px; border: 1px solid #fef08a;">
+                    <div style="font-size: 0.78em; color: #854d0e;">🐘 Rata-rata Ingest (Hadoop):</div>
+                    <div id="stream-hadoop-avg" style="font-size: 1.35em; font-weight: bold; color: #a16207;">-</div>
+                    <div id="stream-hadoop-count" style="font-size: 0.75em; color: #ca8a04;">n=0 data</div>
+                </div>
+                <div style="background: #f0f9ff; padding: 10px 14px; border-radius: 6px; border: 1px solid #bae6fd;">
+                    <div style="font-size: 0.78em; color: #0369a1;">🚀 Rata-rata Ingest (Spark):</div>
+                    <div id="stream-spark-avg" style="font-size: 1.35em; font-weight: bold; color: #0284c7;">-</div>
+                    <div id="stream-spark-count" style="font-size: 0.75em; color: #38bdf8;">n=0 data</div>
+                </div>
+            </div>
+
+            <!-- Box Catatan Komparasi -->
+            <div id="stream-comparison-box" style="margin-top: 10px; font-size: 0.85em; padding: 8px 12px; background: #f1f5f9; color: #334155; border-radius: 6px; border-left: 4px solid #64748b;">
+                📊 Aktifkan "Pantau Stream" saat menjalankan <code>stream_producer.py</code> untuk melihat komparasi durasi secara live.
+            </div>
+
+            <div style="margin-top: 12px;">
+                <div style="font-size: 0.82em; font-weight: bold; margin-bottom: 4px; color: #475569;">Live Event Stream Feed (dengan Durasi Proses):</div>
+                <div id="stream-feed-list" style="max-height: 110px; overflow-y: auto; background: #0f172a; color: #22c55e; font-family: 'Consolas', monospace; font-size: 0.82em; padding: 8px 12px; border-radius: 6px; line-height: 1.5;">
+                    <div>> Simulator standby. Jalankan `python stream_producer.py` di terminal.</div>
+                </div>
+            </div>
+        </div>
+
         <div class="card analytics-card">
             <div class="analytics-header">
-                <h3>Dashboard Analitik Waktu Eksekusi</h3>
+                <h3>Dashboard Analitik Waktu Eksekusi & Ingest Data</h3>
                 <div class="legend">
                     <span><i class="legend-dot" style="background:#2185d0"></i>Spark</span>
                     <span><i class="legend-dot" style="background:#e49b22"></i>Hadoop</span>
                 </div>
             </div>
-            <p class="analytics-subtitle" id="analytics-status">Belum ada pengukuran. Grafik akan diperbarui setiap Anda menjalankan Filter Data atau Cari Teks.</p>
+            <p class="analytics-subtitle" id="analytics-status">Grafik membandingkan durasi operasi query analitik serta waktu penangkapan data streaming real-time antara Hadoop dan Spark.</p>
             <div class="chart-grid" id="execution-charts"></div>
         </div>
 
@@ -230,11 +366,18 @@
     </div>
 
     <script>
+        let currentMode = 'spark';
+        let lastStreamCount = { patients: 0, pathology: 0 };
+        let pollTimer = null;
+
         async function loadModeBadge() {
             try {
                 const res = await fetch('/api/mode');
                 const json = await res.json();
+                currentMode = json.mode;
                 const badge = document.getElementById('mode-badge');
+                const streamEngine = document.getElementById('stream-engine-label');
+
                 if (badge) {
                     badge.innerText = `Mode: ${json.mode.toUpperCase()} (${json.engine})`;
                     if (json.mode === 'hadoop') {
@@ -247,13 +390,114 @@
                         badge.style.border = '1px solid #b8daff';
                     }
                 }
+                if (streamEngine) {
+                    streamEngine.innerText = `${json.mode.toUpperCase()} (${json.engine})`;
+                }
             } catch (err) {
                 console.error(err);
             }
         }
 
+        function togglePolling(enabled) {
+            const badge = document.getElementById('stream-status-badge');
+            if (pollTimer) {
+                clearInterval(pollTimer);
+                pollTimer = null;
+            }
+
+            if (enabled) {
+                badge.style.background = '#d1fae5';
+                badge.style.color = '#065f46';
+                badge.innerText = '🟢 Live Polling Aktif (tiap 3s)';
+                pollStreamStatus();
+                pollTimer = setInterval(() => {
+                    // Hanya polling jika tab browser sedang aktif dibuka
+                    if (!document.hidden) {
+                        pollStreamStatus();
+                    }
+                }, 3000);
+            } else {
+                badge.style.background = '#e2e8f0';
+                badge.style.color = '#475569';
+                badge.innerText = '⚪ Live Monitor Standby';
+            }
+        }
+
+        async function pollStreamStatus(manualClick = false) {
+            try {
+                const res = await fetch('/api/stream/status');
+                if (!res.ok) return;
+                const json = await res.json();
+                const stats = json.stats;
+                const modeStats = stats.mode_stats || {};
+
+                const totalPatients = stats.total_patients || 0;
+                const totalPathology = stats.total_pathology || 0;
+                const totalCurrent = totalPatients + totalPathology;
+
+                document.getElementById('stream-count-total').innerText = totalCurrent;
+                document.getElementById('stream-count-patients').innerText = totalPatients;
+                document.getElementById('stream-count-pathology').innerText = totalPathology;
+                document.getElementById('stream-last-time').innerText = stats.last_stream_time || '-';
+
+                // Latensi ingest terakhir
+                if (stats.latest_ingest_time_ms !== null && stats.latest_ingest_time_ms !== undefined) {
+                    document.getElementById('stream-last-latency').innerText = `${stats.latest_ingest_time_ms} ms`;
+                }
+
+                // Rata-rata Hadoop & Spark
+                const hStat = modeStats.hadoop || {};
+                const sStat = modeStats.spark || {};
+
+                document.getElementById('stream-hadoop-avg').innerText = hStat.avg_ms ? `${hStat.avg_ms} ms` : '-';
+                document.getElementById('stream-hadoop-count').innerText = `n=${hStat.count || 0} data`;
+
+                document.getElementById('stream-spark-avg').innerText = sStat.avg_ms ? `${sStat.avg_ms} ms` : '-';
+                document.getElementById('stream-spark-count').innerText = `n=${sStat.count || 0} data`;
+
+                // Catatan komparasi
+                if (json.comparison_note) {
+                    document.getElementById('stream-comparison-box').innerHTML = `💡 <strong>Analisis Ingest:</strong> ${json.comparison_note}`;
+                }
+
+                const totalPrev = lastStreamCount.patients + lastStreamCount.pathology;
+
+                // Render feed list
+                if (json.recent_streams && json.recent_streams.length > 0) {
+                    let html = '';
+                    json.recent_streams.slice(0, 8).forEach(item => {
+                        const durText = item.ingest_time_ms !== undefined ? `[⏱️ ${item.ingest_time_ms} ms]` : '';
+                        if (item.type === 'patient') {
+                            html += `<div>[${item.timestamp}] 🩺 Pasien #${item.id} (Diag: ${item.diagnosis}, Radius: ${item.radius_mean}) -> [${item.mode.toUpperCase()}] ${durText} OK</div>`;
+                        } else {
+                            html += `<div>[${item.timestamp}] 📄 Laporan Patologi: "${item.summary}" -> [${item.mode.toUpperCase()}] ${durText} OK</div>`;
+                        }
+                    });
+                    document.getElementById('stream-feed-list').innerHTML = html;
+                }
+
+                // Auto-refresh tabel jika ada data baru masuk
+                const hasNewData = (totalPatients > lastStreamCount.patients) || (totalPathology > lastStreamCount.pathology);
+                if ((hasNewData && totalPrev > 0) || manualClick) {
+                    const autoRefresh = document.getElementById('autoRefreshToggle').checked;
+                    if (autoRefresh || manualClick) {
+                        fetchPatients();
+                        searchKeyword();
+                    }
+                    await loadExecutionAnalytics();
+                }
+
+                lastStreamCount.patients = totalPatients;
+                lastStreamCount.pathology = totalPathology;
+
+            } catch (e) {
+                console.error("Gagal polling stream:", e);
+            }
+        }
+
         async function fetchPatients() {
-            document.getElementById('df-body').innerHTML = '<tr><td colspan="3">Mengeksekusi query...</td></tr>';
+            const bodyElem = document.getElementById('df-body');
+            if (!bodyElem) return;
             const radius = document.getElementById('radiusInput').value;
             const diag = document.getElementById('diagInput').value;
 
@@ -281,34 +525,36 @@
                 } else {
                     rowsHTML = '<tr><td colspan="3">Tidak ada data pasien yang sesuai kriteria.</td></tr>';
                 }
-                document.getElementById('df-body').innerHTML = rowsHTML;
+                bodyElem.innerHTML = rowsHTML;
                 await loadExecutionAnalytics();
 
             } catch (err) {
-                document.getElementById('df-body').innerHTML = `<tr><td colspan="3">Error: ${err.message}</td></tr>`;
+                bodyElem.innerHTML = `<tr><td colspan="3">Error: ${err.message}</td></tr>`;
             }
         }
 
         async function searchKeyword() {
-            document.getElementById('rdd-body').innerHTML = '<tr><td colspan="2">Mencari laporan teks...</td></tr>';
+            const bodyElem = document.getElementById('rdd-body');
+            if (!bodyElem) return;
             const word = document.getElementById('keywordInput').value;
 
             try {
-                const res = await fetch(`/api/pathology/search?keyword=${encodeURIComponent(word)}`);
+                const res = await fetch(`/api/pathology/search?keyword=${word}`);
                 const json = await res.json();
 
                 if (!res.ok) throw new Error(json.detail || "Gagal mencari teks");
 
+                const totalFound = json.total_found !== undefined ? json.total_found : (json.data ? json.data.length : 0);
                 document.getElementById('rdd-metrics').innerHTML = `
                     <span class="metric">⚙️ Engine: ${(json.mode || 'spark').toUpperCase()}</span>
                     <span class="metric">⏱️ Waktu Eksekusi: ${json.execution_time_sec} detik</span>
-                    <span class="metric">📊 Preview Max 50 Baris</span>
+                    <span class="metric">📊 Total Ditemukan: ${totalFound} Laporan Pasien</span>
+                    <span class="metric">📑 Preview Max: 50 Baris</span>
                 `;
 
                 let rowsHTML = '';
                 if (json.data && json.data.length > 0) {
                     json.data.forEach((line, index) => {
-                        // Fitur stabilo kuning otomatis untuk kata yang dicari
                         const regex = new RegExp(json.keyword, 'gi');
                         const highlightedText = line.replace(regex, match => `<strong style="background:yellow; color:#d9534f; padding:0 3px;">${match}</strong>`);
 
@@ -320,20 +566,29 @@
                 } else {
                     rowsHTML = `<tr><td colspan="2">Kata "${json.keyword}" tidak ditemukan.</td></tr>`;
                 }
-                document.getElementById('rdd-body').innerHTML = rowsHTML;
+                bodyElem.innerHTML = rowsHTML;
                 await loadExecutionAnalytics();
 
             } catch (err) {
-                document.getElementById('rdd-body').innerHTML = `<tr><td colspan="2">Error: ${err.message}</td></tr>`;
+                bodyElem.innerHTML = `<tr><td colspan="2">Error: ${err.message}</td></tr>`;
             }
         }
 
         function formatDuration(value) {
-            return value === null || value === undefined ? '—' : `${Number(value).toFixed(4)} dtk`;
+            if (value === null || value === undefined) return '—';
+            const num = Number(value);
+            if (num < 0.05) {
+                return `${(num * 1000).toFixed(1)} ms`;
+            }
+            return `${num.toFixed(4)} dtk`;
         }
 
         function makeChart(operationName, operationData) {
-            const labels = { filter_data: 'Filter Data', cari_teks: 'Cari Teks' };
+            const labels = {
+                filter_data: 'Filter Data (DataFrame)',
+                cari_teks: 'Cari Teks (RDD)',
+                stream_ingest: 'Ingest Stream Real-Time'
+            };
             const values = ['spark', 'hadoop']
                 .map(mode => operationData[mode].average_execution_time_sec)
                 .filter(value => value !== null);
@@ -347,7 +602,7 @@
                     : `<div class="bar-track"><div class="bar ${mode}" style="width:${width}%"></div></div>`;
                 return `<div class="chart-row"><strong>${mode.toUpperCase()}</strong>${measurement}<span class="bar-value">${formatDuration(average)}<br><small>n=${item.count}</small></span></div>`;
             }).join('');
-            return `<section class="chart-panel"><h4 class="chart-title">${labels[operationName]}</h4>${rows}</section>`;
+            return `<section class="chart-panel"><h4 class="chart-title">${labels[operationName] || operationName}</h4>${rows}</section>`;
         }
 
         async function loadExecutionAnalytics() {
@@ -370,6 +625,9 @@
             loadExecutionAnalytics();
             fetchPatients();
             searchKeyword();
+
+            // Ambil data status awal sekali saja tanpa polling terus-menerus
+            pollStreamStatus();
         };
     </script>
 </body>

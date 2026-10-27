@@ -4,7 +4,7 @@ from fastapi import APIRouter, Request
 
 router = APIRouter(prefix="/api/analytics", tags=["Analytics"])
 
-OPERATIONS = ("filter_data", "cari_teks")
+OPERATIONS = ("filter_data", "cari_teks", "stream_ingest")
 MODES = ("hadoop", "spark")
 
 
@@ -37,6 +37,8 @@ def execution_summary(request: Request):
                     "count": len(samples),
                     "average_execution_time_sec": round(sum(samples) / len(samples), 4) if samples else None,
                     "latest_execution_time_sec": round(samples[-1], 4) if samples else None,
+                    "average_execution_time_ms": round((sum(samples) / len(samples)) * 1000, 2) if samples else None,
+                    "latest_execution_time_ms": round(samples[-1] * 1000, 2) if samples else None,
                 }
 
     return {

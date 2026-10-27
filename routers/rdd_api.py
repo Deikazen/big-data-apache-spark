@@ -20,8 +20,9 @@ def search_keyword(request: Request, keyword: str = "cancer"):
             text_rdd = getattr(request.app.state, "text_rdd", None)
             if text_rdd is None:
                 raise HTTPException(status_code=500, detail="Spark text_rdd belum diinisialisasi.")
+            streamed = getattr(request.app.state, "streamed_text_data", [])
             # Tarik data dengan aman menggunakan collect() untuk menghindari crash di Windows
-            all_lines = text_rdd.collect()
+            all_lines = streamed + text_rdd.collect()
 
         matched_lines = [
             str(line) for line in all_lines if target_word in str(line).lower()
@@ -38,6 +39,7 @@ def search_keyword(request: Request, keyword: str = "cancer"):
             "mode": mode,
             "execution_time_sec": exec_time,
             "keyword": target_word,
+            "total_found": len(matched_lines),
             "data": safe_lines
         }
 
@@ -61,12 +63,14 @@ def get_all_pathology(request: Request, limit: int = 100):
             text_rdd = getattr(request.app.state, "text_rdd", None)
             if text_rdd is None:
                 raise HTTPException(status_code=500, detail="Spark text_rdd belum diinisialisasi.")
+            streamed = getattr(request.app.state, "streamed_text_data", [])
             try:
-                lines = text_rdd.take(limit)
+                rdd_lines = text_rdd.take(limit)
             except Exception:
                 # Fallback aman jika python worker mengalami socket reset di Windows
                 all_lines = text_rdd.collect()
-                lines = all_lines[:limit]
+                rdd_lines = all_lines[:limit]
+            lines = (streamed + rdd_lines)[:limit]
 
         safe_lines = [
             str(line).encode("utf-8", "ignore").decode("utf-8") for line in lines
