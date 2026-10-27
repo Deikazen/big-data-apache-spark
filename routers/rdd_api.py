@@ -1,5 +1,6 @@
 import time
 from fastapi import APIRouter, Request, HTTPException
+from routers.analytics_api import record_execution
 
 router = APIRouter(prefix="/api/pathology", tags=["RDD"])
 
@@ -32,6 +33,7 @@ def search_keyword(request: Request, keyword: str = "cancer"):
         ]
 
         exec_time = round(time.time() - start_time, 4)
+        record_execution(request, "cari_teks", exec_time)
         return {
             "mode": mode,
             "execution_time_sec": exec_time,

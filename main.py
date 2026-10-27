@@ -3,16 +3,17 @@ import pandas as pd
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from routers import dataframe_api, rdd_api
+from routers import analytics_api, dataframe_api, rdd_api
 
 os.environ["PYSPARK_PYTHON"] = "python"
 
 app = FastAPI(title="Hybrid Spark & Hadoop Dashboard")
+analytics_api.initialise_metrics(app)
 
 # === PILIH MODE DI SINI SECARA LANGSUNG ===
 # Ubah nilai di bawah menjadi "hadoop" atau "spark"
 # Nilai ini juga dapat di-override lewat environment variable EXEC_MODE
-EXEC_MODE = os.getenv("EXEC_MODE", "spark").lower()
+EXEC_MODE = os.getenv("EXEC_MODE", "hadoop").lower()
 app.state.execution_mode = EXEC_MODE
 
 if EXEC_MODE == "hadoop":
@@ -63,6 +64,7 @@ elif EXEC_MODE == "spark":
 
 app.include_router(dataframe_api.router)
 app.include_router(rdd_api.router)
+app.include_router(analytics_api.router)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 

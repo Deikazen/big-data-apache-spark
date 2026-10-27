@@ -26,6 +26,53 @@
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
         }
 
+        .analytics-card {
+            width: 100%;
+        }
+
+        .analytics-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+
+        .analytics-subtitle {
+            color: #667085;
+            margin: 0 0 14px;
+            font-size: 0.92em;
+        }
+
+        .chart-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(260px, 1fr));
+            gap: 18px;
+        }
+
+        .chart-panel {
+            border: 1px solid #e3e8ef;
+            border-radius: 8px;
+            padding: 14px;
+            background: #fbfcfe;
+        }
+
+        .chart-title { margin: 0 0 12px; font-size: 1em; }
+        .chart-row { display: grid; grid-template-columns: 76px 1fr 68px; gap: 8px; align-items: center; margin: 9px 0; font-size: 0.86em; }
+        .bar-track { height: 22px; background: #e9eef5; border-radius: 5px; overflow: hidden; }
+        .bar { height: 100%; min-width: 0; border-radius: 5px; transition: width .25s ease; }
+        .bar.spark { background: #2185d0; }
+        .bar.hadoop { background: #e49b22; }
+        .bar-value { text-align: right; font-variant-numeric: tabular-nums; color: #344054; }
+        .no-measurement { color: #98a2b3; font-style: italic; font-size: .9em; }
+        .legend { display: flex; gap: 14px; font-size: .82em; color: #475467; }
+        .legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; }
+
+        @media (max-width: 700px) {
+            .card { width: 100%; }
+            .chart-grid { grid-template-columns: 1fr; }
+        }
+
         input,
         select,
         button {
@@ -110,6 +157,18 @@
     <a href="/tables" class="nav-btn">Lihat Full Raw Data ➔</a>
 
     <div class="container">
+
+        <div class="card analytics-card">
+            <div class="analytics-header">
+                <h3>Dashboard Analitik Waktu Eksekusi</h3>
+                <div class="legend">
+                    <span><i class="legend-dot" style="background:#2185d0"></i>Spark</span>
+                    <span><i class="legend-dot" style="background:#e49b22"></i>Hadoop</span>
+                </div>
+            </div>
+            <p class="analytics-subtitle" id="analytics-status">Belum ada pengukuran. Grafik akan diperbarui setiap Anda menjalankan Filter Data atau Cari Teks.</p>
+            <div class="chart-grid" id="execution-charts"></div>
+        </div>
 
         <!-- DataFrame Card -->
         <div class="card">
@@ -223,6 +282,7 @@
                     rowsHTML = '<tr><td colspan="3">Tidak ada data pasien yang sesuai kriteria.</td></tr>';
                 }
                 document.getElementById('df-body').innerHTML = rowsHTML;
+                await loadExecutionAnalytics();
 
             } catch (err) {
                 document.getElementById('df-body').innerHTML = `<tr><td colspan="3">Error: ${err.message}</td></tr>`;
@@ -234,7 +294,7 @@
             const word = document.getElementById('keywordInput').value;
 
             try {
-                const res = await fetch(`/api/pathology/search?keyword=${word}`);
+                const res = await fetch(`/api/pathology/search?keyword=${encodeURIComponent(word)}`);
                 const json = await res.json();
 
                 if (!res.ok) throw new Error(json.detail || "Gagal mencari teks");
@@ -261,14 +321,53 @@
                     rowsHTML = `<tr><td colspan="2">Kata "${json.keyword}" tidak ditemukan.</td></tr>`;
                 }
                 document.getElementById('rdd-body').innerHTML = rowsHTML;
+                await loadExecutionAnalytics();
 
             } catch (err) {
                 document.getElementById('rdd-body').innerHTML = `<tr><td colspan="2">Error: ${err.message}</td></tr>`;
             }
         }
 
+        function formatDuration(value) {
+            return value === null || value === undefined ? '—' : `${Number(value).toFixed(4)} dtk`;
+        }
+
+        function makeChart(operationName, operationData) {
+            const labels = { filter_data: 'Filter Data', cari_teks: 'Cari Teks' };
+            const values = ['spark', 'hadoop']
+                .map(mode => operationData[mode].average_execution_time_sec)
+                .filter(value => value !== null);
+            const maximum = Math.max(...values, 0.0001);
+            const rows = ['spark', 'hadoop'].map(mode => {
+                const item = operationData[mode];
+                const average = item.average_execution_time_sec;
+                const width = average === null ? 0 : Math.max((average / maximum) * 100, 3);
+                const measurement = average === null
+                    ? '<span class="no-measurement">Belum ada data</span>'
+                    : `<div class="bar-track"><div class="bar ${mode}" style="width:${width}%"></div></div>`;
+                return `<div class="chart-row"><strong>${mode.toUpperCase()}</strong>${measurement}<span class="bar-value">${formatDuration(average)}<br><small>n=${item.count}</small></span></div>`;
+            }).join('');
+            return `<section class="chart-panel"><h4 class="chart-title">${labels[operationName]}</h4>${rows}</section>`;
+        }
+
+        async function loadExecutionAnalytics() {
+            try {
+                const res = await fetch('/api/analytics/execution-summary');
+                if (!res.ok) throw new Error('Gagal memuat analitik');
+                const json = await res.json();
+                const charts = document.getElementById('execution-charts');
+                charts.innerHTML = Object.entries(json.operations)
+                    .map(([operation, data]) => makeChart(operation, data)).join('');
+                document.getElementById('analytics-status').innerText =
+                    `Rata-rata dihitung dari seluruh eksekusi sejak server dinyalakan. Mode aktif: ${json.active_mode.toUpperCase()}.`;
+            } catch (err) {
+                document.getElementById('analytics-status').innerText = `Analitik belum dapat dimuat: ${err.message}`;
+            }
+        }
+
         window.onload = () => {
             loadModeBadge();
+            loadExecutionAnalytics();
             fetchPatients();
             searchKeyword();
         };

@@ -1,5 +1,6 @@
 import time
 from fastapi import APIRouter, Request, HTTPException
+from routers.analytics_api import record_execution
 
 router = APIRouter(prefix="/api/patients", tags=["DataFrame"])
 
@@ -30,6 +31,7 @@ def filter_patients(request: Request, min_radius: float = 20.0, diag_type: str =
             data = df_pandas.to_dict(orient="records")
 
         exec_time = round(time.time() - start_time, 4)
+        record_execution(request, "filter_data", exec_time)
         return {
             "mode": mode,
             "execution_time_sec": exec_time,

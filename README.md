@@ -78,6 +78,246 @@ sequenceDiagram
     F-->>B: JSON hasil pencarian
 ```
 
+## Analisis Arsitektur Proyek
+
+### 1. Arsitektur Umum dan Alur Data
+
+Struktur utama proyek adalah:
+
+```text
+.
+├── data/
+│   ├── breast_cancer_data.csv   # Data kanker tabular
+│   └── mtsamples.csv            # Laporan patologi berbasis teks
+├── routers/
+│   ├── dataframe_api.py         # Endpoint DataFrame/Spark SQL
+│   ├── rdd_api.py               # Endpoint RDD/pencarian teks
+│   └── analytics_api.py         # Metrik waktu eksekusi
+├── static/
+│   ├── index.html               # Dashboard utama
+│   └── tables.html              # Preview data mentah
+├── main.py                      # Entry point FastAPI dan pemilih mode
+├── docker-compose.yml           # Infrastruktur Hadoop HDFS
+└── README.md
+```
+
+Komponen aplikasi dan aliran datanya:
+
+```text
++----------------------+       HTTP       +----------------------+
+| Browser              | ----------------> | FastAPI / Uvicorn    |
+| static/*.html        |                  | main.py              |
++----------------------+                  +----------+-----------+
+                                                   |
+                              +--------------------+--------------------+
+                              |                                         |
+                              v                                         v
+                    +----------------------+                  +----------------------+
+                    | dataframe_api.py     |                  | rdd_api.py           |
+                    | /api/patients/*      |                  | /api/pathology/*    |
+                    +----------+-----------+                  +----------+-----------+
+                               |                                         |
+                               v                                         v
+                    breast_cancer_data.csv                     mtsamples.csv
+                    DataFrame / pandas                         RDD / list teks
+                               |                                         |
+                               +--------------------+--------------------+
+                                                    v
+                                           JSON response + metrics
+```
+
+- `breast_cancer_data.csv` berisi data terstruktur dengan kolom seperti
+  `id`, `diagnosis`, `radius_mean`, dan fitur tumor lainnya.
+- `mtsamples.csv` berisi laporan patologi, transkripsi, spesialisasi medis,
+  dan keywords.
+- `main.py` membuat aplikasi FastAPI, membaca `EXEC_MODE`, lalu menginisialisasi
+  Spark atau koneksi HDFS.
+- `dataframe_api.py` menangani filter diagnosis/radius dan preview pasien.
+- `rdd_api.py` menangani pencarian keyword dan preview baris laporan patologi.
+- `analytics_api.py` menyimpan jumlah, rata-rata, dan waktu eksekusi terakhir
+  secara in-memory selama proses aplikasi berjalan.
+
+Pada mode Spark, aliran input lokalnya adalah:
+
+```text
+data/breast_cancer_data.csv --> Spark DataFrame --> temporary view "patients"
+                                                    |
+                                                    v
+                                  Spark SQL --> toPandas() --> JSON
+
+data/mtsamples.csv -----------> Spark RDD[String] --> collect/take
+                                                    |
+                                                    v
+                                      pencarian keyword --> JSON
+```
+
+Pada mode Hadoop, aplikasi membaca dataset dari HDFS. Jika HDFS tidak dapat
+diakses, `main.py` menggunakan file lokal di `data/` sebagai fallback:
+
+```text
+HDFS /data/*.csv --> hdfs.InsecureClient --> list teks/pandas DataFrame --> JSON
+        ^
+        | fallback jika gagal
+data/*.csv lokal --------------------------------+
+```
+
+### 2. Arsitektur Pemrosesan Mode Spark
+
+Mode Spark diaktifkan dengan `EXEC_MODE=spark`. `main.py` membuat
+`SparkSession` menggunakan `local[1]`, sehingga Spark berjalan pada satu
+mesin dan satu thread komputasi:
+
+```text
++------------------------------------------------------+
+| Proses FastAPI / Uvicorn                             |
+|                                                      |
+|  +-------------------+                               |
+|  | Spark Driver      |                               |
+|  | SparkSession      |                               |
+|  | SparkContext      |                               |
+|  +---------+---------+                               |
+|            | local scheduler                         |
+|            v                                         |
+|  +-------------------+                               |
+|  | Local executor    |                               |
+|  | local[1]          |                               |
+|  +-------------------+                               |
++------------------------------------------------------+
+```
+
+Tidak ada Spark Master eksternal, Spark Worker, atau executor terpisah pada
+repository ini. Dengan kata lain, `local[1]` adalah local mode, bukan Spark
+cluster deployment.
+
+#### Alur DataFrame dan Spark SQL
+
+1. `spark.read.csv(..., header=True, inferSchema=True)` membaca
+   `breast_cancer_data.csv`.
+2. Data dibentuk menjadi Spark DataFrame.
+3. DataFrame didaftarkan sebagai temporary view bernama `patients`.
+4. Endpoint `/api/patients/filter` menjalankan query SQL untuk memfilter
+   `diagnosis` dan `radius_mean`.
+5. Endpoint memanggil `toPandas()`, mengubah hasil ke dictionary, lalu
+   mengembalikannya sebagai JSON.
+
+```text
+CSV --> Spark CSV Reader --> DataFrame --> SQL view "patients"
+                                             |
+                                             v
+                             SELECT/filter --> toPandas() --> JSON
+```
+
+#### Alur RDD
+
+1. `spark.sparkContext.textFile("data/mtsamples.csv")` membuat
+   `RDD[String]`.
+2. `/api/pathology/all` menggunakan `take(limit)`.
+3. `/api/pathology/search` menggunakan `collect()`, kemudian pencarian
+   keyword dilakukan oleh Python driver.
+4. Hasil pencarian dibatasi maksimal 50 baris.
+
+```text
+mtsamples.csv --> RDD[String] --> collect()
+                                      |
+                                      v
+                         Python list comprehension
+                         keyword in line.lower()
+                                      |
+                                      v
+                              maksimal 50 hasil
+```
+
+Implementasi pencarian saat ini belum menggunakan transformasi
+`text_rdd.filter(...)`; seluruh baris dikumpulkan ke driver terlebih dahulu.
+Karena itu pendekatan ini cocok untuk demonstrasi, tetapi kurang ideal untuk
+dataset teks yang sangat besar.
+
+### 3. Infrastruktur Hadoop melalui Docker Compose
+
+`docker-compose.yml` hanya mendefinisikan dua service HDFS:
+
+| Service | Peran | Port host |
+|---|---|---|
+| `namenode` | Metadata HDFS, RPC, dan Web UI/WebHDFS | `9870`, `9000` |
+| `datanode` | Penyimpanan blok data HDFS | `9864` |
+
+Tidak ada YARN ResourceManager, NodeManager, Hadoop History Server, Spark
+Master, atau Spark Worker dalam Compose ini. Jadi konfigurasi tersebut adalah
+HDFS minimal, bukan cluster Hadoop lengkap berbasis YARN.
+
+```text
+                         Host
+              +-------------------------+
+              | FastAPI / Uvicorn       |
+              | InsecureClient          |
+              +------------+------------+
+                           |
+                           | http://localhost:9870
+                           v
++----------------------------------------------------------------+
+| Docker network                                                 |
+|                                                                |
+|  +-----------------------+      hdfs://namenode:9000           |
+|  | namenode              | <----------------------------------+
+|  | NameNode              |                                    |
+|  | Web UI: 9870          |                                    |
+|  | RPC: 9000             |                                    |
+|  +-----------+-----------+                                    |
+|              | metadata dan koordinasi blok                   |
+|              v                                                 |
+|  +-----------------------+                                    |
+|  | datanode              |                                    |
+|  | DataNode              |                                    |
+|  | Web UI: 9864          |                                    |
+|  +-----------------------+                                    |
++----------------------------------------------------------------+
+```
+
+Detail komunikasi:
+
+- Kedua container berada pada network default Docker Compose.
+- `datanode` menemukan NameNode melalui hostname `namenode`.
+- `CORE_CONF_fs_defaultFS=hdfs://namenode:9000` menetapkan NameNode sebagai
+  filesystem default.
+- `SERVICE_PRECONDITION=namenode:9870` membuat DataNode menunggu NameNode
+  siap.
+- Named volume `hadoop_namenode` menyimpan metadata NameNode.
+- Named volume `hadoop_datanode` menyimpan blok data DataNode.
+- Folder host `data/` tidak otomatis dimount ke container dan tidak otomatis
+  masuk HDFS.
+
+Dataset harus dimasukkan ke HDFS secara manual, misalnya:
+
+```text
+data/*.csv di host
+       |
+       | docker cp
+       v
+file sementara di container namenode
+       |
+       | hdfs dfs -put
+       v
+HDFS:
+  /data/mtsamples.csv
+  /data/breast_cancer_data.csv
+```
+
+Contoh perintah:
+
+```powershell
+docker cp data\mtsamples.csv namenode:/tmp/mtsamples.csv
+docker cp data\breast_cancer_data.csv namenode:/tmp/breast_cancer_data.csv
+docker exec namenode hdfs dfs -mkdir -p /data
+docker exec namenode hdfs dfs -put -f /tmp/mtsamples.csv /data/
+docker exec namenode hdfs dfs -put -f /tmp/breast_cancer_data.csv /data/
+```
+
+Dalam mode Hadoop, `InsecureClient("http://localhost:9870", user="root")`
+membaca file melalui NameNode/WebHDFS. NameNode mengelola metadata dan lokasi
+blok, sedangkan isi blok disimpan oleh DataNode. Setelah dibaca, pemrosesan
+berlangsung di memori proses FastAPI menggunakan list Python dan pandas; tidak
+ada job MapReduce atau Spark-on-YARN.
+
 ## Teknologi
 
 | Komponen | Peran |
