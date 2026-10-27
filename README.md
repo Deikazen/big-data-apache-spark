@@ -103,27 +103,23 @@ Struktur utama proyek adalah:
 
 Komponen aplikasi dan aliran datanya:
 
-```text
-+----------------------+       HTTP       +----------------------+
-| Browser              | ----------------> | FastAPI / Uvicorn    |
-| static/*.html        |                  | main.py              |
-+----------------------+                  +----------+-----------+
-                                                   |
-                              +--------------------+--------------------+
-                              |                                         |
-                              v                                         v
-                    +----------------------+                  +----------------------+
-                    | dataframe_api.py     |                  | rdd_api.py           |
-                    | /api/patients/*      |                  | /api/pathology/*    |
-                    +----------+-----------+                  +----------+-----------+
-                               |                                         |
-                               v                                         v
-                    breast_cancer_data.csv                     mtsamples.csv
-                    DataFrame / pandas                         RDD / list teks
-                               |                                         |
-                               +--------------------+--------------------+
-                                                    v
-                                           JSON response + metrics
+```mermaid
+flowchart LR
+    U[Browser / Dashboard<br/>static/*.html] -->|HTTP REST| API[FastAPI / Uvicorn<br/>main.py]
+    API --> DF[Router DataFrame<br/>/api/patients/*]
+    API --> RDD[Router RDD<br/>/api/pathology/*]
+    API --> ANA[Router Analytics<br/>/api/analytics/*]
+
+    DF --> CSV1[data/breast_cancer_data.csv]
+    CSV1 --> DFPROC[DataFrame / Spark SQL<br/>atau pandas]
+    RDD --> CSV2[data/mtsamples.csv]
+    CSV2 --> RDDPROC[RDD / list teks]
+
+    DFPROC --> OUT[JSON response]
+    RDDPROC --> OUT
+    ANA --> METRICS[Execution metrics<br/>in-memory]
+    METRICS --> OUT
+    OUT --> U
 ```
 
 - `breast_cancer_data.csv` berisi data terstruktur dengan kolom seperti
@@ -139,26 +135,35 @@ Komponen aplikasi dan aliran datanya:
 
 Pada mode Spark, aliran input lokalnya adalah:
 
-```text
-data/breast_cancer_data.csv --> Spark DataFrame --> temporary view "patients"
-                                                    |
-                                                    v
-                                  Spark SQL --> toPandas() --> JSON
+```mermaid
+flowchart TD
+    C[data/breast_cancer_data.csv] --> READCSV[spark.read.csv<br/>header=True, inferSchema=True]
+    READCSV --> DF[Spark DataFrame]
+    DF --> VIEW[Temporary view: patients]
+    VIEW --> SQL[Spark SQL filter / LIMIT]
+    SQL --> PANDAS[toPandas()]
+    PANDAS --> JSON1[JSON pasien]
 
-data/mtsamples.csv -----------> Spark RDD[String] --> collect/take
-                                                    |
-                                                    v
-                                      pencarian keyword --> JSON
+    T[data/mtsamples.csv] --> TEXT[sparkContext.textFile]
+    TEXT --> RDD[RDD String]
+    RDD --> ACTION{Action}
+    ACTION -->|take| PREVIEW[Preview baris]
+    ACTION -->|collect| SEARCH[Pencarian keyword di Python driver]
+    SEARCH --> JSON2[JSON hasil teks]
+    PREVIEW --> JSON2
 ```
 
 Pada mode Hadoop, aplikasi membaca dataset dari HDFS. Jika HDFS tidak dapat
 diakses, `main.py` menggunakan file lokal di `data/` sebagai fallback:
 
-```text
-HDFS /data/*.csv --> hdfs.InsecureClient --> list teks/pandas DataFrame --> JSON
-        ^
-        | fallback jika gagal
-data/*.csv lokal --------------------------------+
+```mermaid
+flowchart LR
+    HDFS[HDFS /data/*.csv] --> CLIENT[hdfs.InsecureClient]
+    LOCAL[data/*.csv lokal] -. fallback jika HDFS gagal .-> CLIENT
+    CLIENT --> TEXT[list teks]
+    CLIENT --> PDF[pandas DataFrame]
+    TEXT --> JSON[JSON response]
+    PDF --> JSON
 ```
 
 ### 2. Arsitektur Pemrosesan Mode Spark
@@ -167,22 +172,17 @@ Mode Spark diaktifkan dengan `EXEC_MODE=spark`. `main.py` membuat
 `SparkSession` menggunakan `local[1]`, sehingga Spark berjalan pada satu
 mesin dan satu thread komputasi:
 
-```text
-+------------------------------------------------------+
-| Proses FastAPI / Uvicorn                             |
-|                                                      |
-|  +-------------------+                               |
-|  | Spark Driver      |                               |
-|  | SparkSession      |                               |
-|  | SparkContext      |                               |
-|  +---------+---------+                               |
-|            | local scheduler                         |
-|            v                                         |
-|  +-------------------+                               |
-|  | Local executor    |                               |
-|  | local[1]          |                               |
-|  +-------------------+                               |
-+------------------------------------------------------+
+```mermaid
+flowchart TB
+    subgraph APP[Proses FastAPI / Uvicorn]
+        DRIVER[Spark Driver<br/>SparkSession<br/>SparkContext]
+        EXEC[Local Executor<br/>local[1]<br/>1 execution thread]
+        DRIVER -->|local scheduler| EXEC
+    end
+
+    NOTE[Local mode] -.-> DRIVER
+    NO_MASTER[Tidak ada Spark Master eksternal] -.-> DRIVER
+    NO_WORKER[Tidak ada Spark Worker cluster] -.-> EXEC
 ```
 
 Tidak ada Spark Master eksternal, Spark Worker, atau executor terpisah pada
@@ -200,11 +200,15 @@ cluster deployment.
 5. Endpoint memanggil `toPandas()`, mengubah hasil ke dictionary, lalu
    mengembalikannya sebagai JSON.
 
-```text
-CSV --> Spark CSV Reader --> DataFrame --> SQL view "patients"
-                                             |
-                                             v
-                             SELECT/filter --> toPandas() --> JSON
+```mermaid
+flowchart LR
+    CSV[breast_cancer_data.csv] --> READER[Spark CSV Reader]
+    READER --> DF[Spark DataFrame]
+    DF --> VIEW[SQL view: patients]
+    VIEW --> FILTER[SELECT id, diagnosis, radius_mean<br/>WHERE diagnosis and radius_mean]
+    FILTER --> PANDAS[toPandas()]
+    PANDAS --> RECORDS[Dictionary records]
+    RECORDS --> JSON[JSON response]
 ```
 
 #### Alur RDD
@@ -216,15 +220,14 @@ CSV --> Spark CSV Reader --> DataFrame --> SQL view "patients"
    keyword dilakukan oleh Python driver.
 4. Hasil pencarian dibatasi maksimal 50 baris.
 
-```text
-mtsamples.csv --> RDD[String] --> collect()
-                                      |
-                                      v
-                         Python list comprehension
-                         keyword in line.lower()
-                                      |
-                                      v
-                              maksimal 50 hasil
+```mermaid
+flowchart LR
+    CSV[mtsamples.csv] --> TEXT[textFile()]
+    TEXT --> RDD[RDD String]
+    RDD --> COLLECT[collect()]
+    COLLECT --> DRIVER[Python driver<br/>keyword in line.lower()]
+    DRIVER --> LIMIT[Ambil maksimal 50 baris]
+    LIMIT --> JSON[JSON response]
 ```
 
 Implementasi pencarian saat ini belum menggunakan transformasi
@@ -245,32 +248,22 @@ Tidak ada YARN ResourceManager, NodeManager, Hadoop History Server, Spark
 Master, atau Spark Worker dalam Compose ini. Jadi konfigurasi tersebut adalah
 HDFS minimal, bukan cluster Hadoop lengkap berbasis YARN.
 
-```text
-                         Host
-              +-------------------------+
-              | FastAPI / Uvicorn       |
-              | InsecureClient          |
-              +------------+------------+
-                           |
-                           | http://localhost:9870
-                           v
-+----------------------------------------------------------------+
-| Docker network                                                 |
-|                                                                |
-|  +-----------------------+      hdfs://namenode:9000           |
-|  | namenode              | <----------------------------------+
-|  | NameNode              |                                    |
-|  | Web UI: 9870          |                                    |
-|  | RPC: 9000             |                                    |
-|  +-----------+-----------+                                    |
-|              | metadata dan koordinasi blok                   |
-|              v                                                 |
-|  +-----------------------+                                    |
-|  | datanode              |                                    |
-|  | DataNode              |                                    |
-|  | Web UI: 9864          |                                    |
-|  +-----------------------+                                    |
-+----------------------------------------------------------------+
+```mermaid
+flowchart TB
+    APP[Host: FastAPI / Uvicorn<br/>hdfs.InsecureClient]
+
+    subgraph DOCKER[Docker Compose network]
+        NN[NameNode<br/>Web UI/WebHDFS: 9870<br/>RPC: 9000]
+        DN[DataNode<br/>Web UI: 9864]
+        VN[(hadoop_namenode<br/>named volume)]
+        VD[(hadoop_datanode<br/>named volume)]
+        NN -->|metadata dan koordinasi blok| DN
+        NN --- VN
+        DN --- VD
+    end
+
+    APP -->|HTTP localhost:9870| NN
+    DN -->|hostname namenode<br/>hdfs://namenode:9000| NN
 ```
 
 Detail komunikasi:
@@ -288,18 +281,12 @@ Detail komunikasi:
 
 Dataset harus dimasukkan ke HDFS secara manual, misalnya:
 
-```text
-data/*.csv di host
-       |
-       | docker cp
-       v
-file sementara di container namenode
-       |
-       | hdfs dfs -put
-       v
-HDFS:
-  /data/mtsamples.csv
-  /data/breast_cancer_data.csv
+```mermaid
+flowchart TD
+    HOST[data/*.csv di host] -->|docker cp| TMP[File sementara<br/>di container namenode]
+    TMP -->|hdfs dfs -put| HDFS[(HDFS /data)]
+    HDFS --> MTS[/data/mtsamples.csv/]
+    HDFS --> BC[/data/breast_cancer_data.csv/]
 ```
 
 Contoh perintah:
