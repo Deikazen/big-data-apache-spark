@@ -11,18 +11,12 @@ def search_keyword(request: Request, keyword: str = "cancer"):
         text_rdd = request.app.state.text_rdd
         target_word = keyword.lower()
 
-        # TRIK ANTI-CRASH: Kita tarik datanya ke Python murni dulu (collect),
-        # sehingga worker Spark tidak perlu menjalankan fungsi lambda yang rawan crash di Windows.
+        # Tarik data dengan aman menggunakan collect() untuk menghindari crash di Windows
         all_lines = text_rdd.collect()
-
-        # Filter dilakukan oleh Python bawaan, 100% aman dari error Socket/Connection Reset
         matched_lines = [
             str(line) for line in all_lines if target_word in str(line).lower()]
 
-        # Ambil maksimal 50 baris untuk tabel
         lines = matched_lines[:50]
-
-        # Bersihkan karakter aneh
         safe_lines = [line.encode("utf-8", "ignore").decode("utf-8")
                       for line in lines]
 
@@ -37,6 +31,7 @@ def search_keyword(request: Request, keyword: str = "cancer"):
 def get_all_pathology(request: Request, limit: int = 100):
     try:
         text_rdd = request.app.state.text_rdd
+        # Menggunakan take() dengan pengaman konversi string
         lines = text_rdd.take(limit)
         safe_lines = [str(line).encode(
             "utf-8", "ignore").decode("utf-8") for line in lines]
