@@ -3,7 +3,7 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>Spark Analytics Dashboard</title>
+    <title>Hybrid Spark & Hadoop Dashboard</title>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, sans-serif;
@@ -56,6 +56,7 @@
             font-size: 0.9em;
             margin-bottom: 10px;
             display: inline-block;
+            margin-right: 5px;
         }
 
         .nav-btn {
@@ -105,7 +106,7 @@
 </head>
 
 <body>
-    <h2>🩺 Dashboard Analisis Medis (Apache Spark)</h2>
+    <h2>🩺 Dashboard Analisis Medis <span id="mode-badge" style="font-size: 0.6em; padding: 4px 10px; border-radius: 6px; background: #e2e8f0; color: #333; vertical-align: middle;">Memuat Mode...</span></h2>
     <a href="/tables" class="nav-btn">Lihat Full Raw Data ➔</a>
 
     <div class="container">
@@ -143,7 +144,7 @@
 
         <!-- RDD Card -->
         <div class="card">
-            <h3>Pencarian Teks Patologi (RDD)</h3>
+            <h3>Pencarian Teks Patologi (RDD / Text)</h3>
             <label>Cari Istilah Medis:</label>
             <input type="text" id="keywordInput" value="tumor">
             <button onclick="searchKeyword()">Cari Teks</button>
@@ -160,7 +161,7 @@
                     </thead>
                     <tbody id="rdd-body">
                         <tr>
-                            <td colspan="2">Siap memproses RDD...</td>
+                            <td colspan="2">Siap memproses teks...</td>
                         </tr>
                     </tbody>
                 </table>
@@ -170,8 +171,30 @@
     </div>
 
     <script>
+        async function loadModeBadge() {
+            try {
+                const res = await fetch('/api/mode');
+                const json = await res.json();
+                const badge = document.getElementById('mode-badge');
+                if (badge) {
+                    badge.innerText = `Mode: ${json.mode.toUpperCase()} (${json.engine})`;
+                    if (json.mode === 'hadoop') {
+                        badge.style.background = '#fff3cd';
+                        badge.style.color = '#856404';
+                        badge.style.border = '1px solid #ffeeba';
+                    } else {
+                        badge.style.background = '#cce5ff';
+                        badge.style.color = '#004085';
+                        badge.style.border = '1px solid #b8daff';
+                    }
+                }
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
         async function fetchPatients() {
-            document.getElementById('df-body').innerHTML = '<tr><td colspan="3">Mengeksekusi Spark SQL...</td></tr>';
+            document.getElementById('df-body').innerHTML = '<tr><td colspan="3">Mengeksekusi query...</td></tr>';
             const radius = document.getElementById('radiusInput').value;
             const diag = document.getElementById('diagInput').value;
 
@@ -179,7 +202,10 @@
                 const res = await fetch(`/api/patients/filter?min_radius=${radius}&diag_type=${diag}`);
                 const json = await res.json();
 
+                if (!res.ok) throw new Error(json.detail || "Gagal memuat data pasien");
+
                 document.getElementById('df-metrics').innerHTML = `
+                    <span class="metric">⚙️ Engine: ${(json.mode || 'spark').toUpperCase()}</span>
                     <span class="metric">⏱️ Waktu Eksekusi: ${json.execution_time_sec} detik</span>
                     <span class="metric">📊 Ditemukan: ${json.total_found} Pasien</span>
                 `;
@@ -204,14 +230,17 @@
         }
 
         async function searchKeyword() {
-            document.getElementById('rdd-body').innerHTML = '<tr><td colspan="2">Menjalankan RDD MapReduce...</td></tr>';
+            document.getElementById('rdd-body').innerHTML = '<tr><td colspan="2">Mencari laporan teks...</td></tr>';
             const word = document.getElementById('keywordInput').value;
 
             try {
                 const res = await fetch(`/api/pathology/search?keyword=${word}`);
                 const json = await res.json();
 
+                if (!res.ok) throw new Error(json.detail || "Gagal mencari teks");
+
                 document.getElementById('rdd-metrics').innerHTML = `
+                    <span class="metric">⚙️ Engine: ${(json.mode || 'spark').toUpperCase()}</span>
                     <span class="metric">⏱️ Waktu Eksekusi: ${json.execution_time_sec} detik</span>
                     <span class="metric">📊 Preview Max 50 Baris</span>
                 `;
@@ -239,6 +268,7 @@
         }
 
         window.onload = () => {
+            loadModeBadge();
             fetchPatients();
             searchKeyword();
         };

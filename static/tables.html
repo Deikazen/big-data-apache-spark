@@ -3,7 +3,7 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>Raw Data Tables - Spark</title>
+    <title>Raw Data Tables - Hybrid Spark & Hadoop</title>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, sans-serif;
@@ -78,7 +78,7 @@
         <a href="/">⬅ Kembali ke Dashboard Analytics</a>
     </div>
 
-    <h2>Tabel Dataset Apache Spark</h2>
+    <h2>Tabel Dataset <span id="mode-badge" style="font-size: 0.6em; padding: 4px 10px; border-radius: 6px; background: #e2e8f0; color: #333; vertical-align: middle;">Memuat Mode...</span></h2>
 
     <!-- Tabel DataFrame -->
     <div class="table-container">
@@ -87,15 +87,15 @@
             <thead id="df-head"></thead>
             <tbody id="df-body">
                 <tr>
-                    <td>Sedang memuat data terstruktur dari Spark...</td>
+                    <td>Sedang memuat data terstruktur...</td>
                 </tr>
             </tbody>
         </table>
     </div>
 
-    <!-- Tabel RDD -->
+    <!-- Tabel RDD / Text -->
     <div class="table-container">
-        <h3>Laporan Patologi (RDD Raw Text) <span class="badge">Preview 100 Baris</span></h3>
+        <h3>Laporan Patologi (RDD / Text Raw) <span class="badge">Preview 100 Baris</span></h3>
         <table>
             <thead>
                 <tr>
@@ -105,13 +105,35 @@
             </thead>
             <tbody id="rdd-body">
                 <tr>
-                    <td colspan="2">Sedang memuat data tidak terstruktur dari Spark...</td>
+                    <td colspan="2">Sedang memuat data teks...</td>
                 </tr>
             </tbody>
         </table>
     </div>
 
     <script>
+        async function loadModeBadge() {
+            try {
+                const res = await fetch('/api/mode');
+                const json = await res.json();
+                const badge = document.getElementById('mode-badge');
+                if (badge) {
+                    badge.innerText = `Mode: ${json.mode.toUpperCase()} (${json.engine})`;
+                    if (json.mode === 'hadoop') {
+                        badge.style.background = '#fff3cd';
+                        badge.style.color = '#856404';
+                        badge.style.border = '1px solid #ffeeba';
+                    } else {
+                        badge.style.background = '#cce5ff';
+                        badge.style.color = '#004085';
+                        badge.style.border = '1px solid #b8daff';
+                    }
+                }
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
         async function fetchDataFrame() {
             try {
                 const res = await fetch('/api/patients/all');
@@ -145,7 +167,7 @@
                 const res = await fetch('/api/pathology/all');
                 const json = await res.json();
 
-                if (!res.ok || !json.data) throw new Error(json.detail || "Server gagal mengirim data RDD");
+                if (!res.ok || !json.data) throw new Error(json.detail || "Server gagal mengirim data teks");
 
                 const tbody = document.getElementById('rdd-body');
                 let bodyHTML = '';
@@ -157,11 +179,12 @@
                 });
                 tbody.innerHTML = bodyHTML;
             } catch (error) {
-                document.getElementById('rdd-body').innerHTML = `<tr><td colspan="2">Error memuat RDD: ${error.message}</td></tr>`;
+                document.getElementById('rdd-body').innerHTML = `<tr><td colspan="2">Error memuat data teks: ${error.message}</td></tr>`;
             }
         }
 
         window.onload = () => {
+            loadModeBadge();
             fetchDataFrame();
             fetchRDD();
         };
