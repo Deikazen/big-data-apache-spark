@@ -38,19 +38,19 @@ Dashboard analitik data medis berbasis **FastAPI**, **Apache Spark** dan
 
 ```mermaid
 flowchart LR
-    U[Pengguna] --> UI[Dashboard HTML/CSS/JavaScript]
-    UI --> API[FastAPI]
+    U["Pengguna"] --> UI["Dashboard HTML CSS JavaScript"]
+    UI --> API["FastAPI"]
 
-    API --> R[Router RDD<br/>/api/pathology]
-    API --> DF[Router DataFrame<br/>/api/patients]
+    API --> R["Router RDD<br/>/api/pathology"]
+    API --> DF["Router DataFrame<br/>/api/patients"]
 
-    R --> RDD[Spark RDD<br/>mtsamples.csv]
-    DF --> SQL[Spark SQL/DataFrame<br/>patients]
+    R --> RDD["Spark RDD<br/>mtsamples.csv"]
+    DF --> SQL["Spark SQL DataFrame<br/>patients"]
 
-    RDD --> P[data/mtsamples.csv]
-    SQL --> C[data/breast_cancer_data.csv]
+    RDD --> P["data/mtsamples.csv"]
+    SQL --> C["data/breast_cancer_data.csv"]
 
-    API -. mode hadoop .-> HDFS[Hadoop HDFS<br/>NameNode :9870]
+    API -. mode hadoop .-> HDFS["Hadoop HDFS<br/>NameNode :9870"]
     HDFS -. membaca .-> P
 ```
 
@@ -105,19 +105,19 @@ Komponen aplikasi dan aliran datanya:
 
 ```mermaid
 flowchart LR
-    U[Browser / Dashboard<br/>static/*.html] -->|HTTP REST| API[FastAPI / Uvicorn<br/>main.py]
-    API --> DF[Router DataFrame<br/>/api/patients/*]
-    API --> RDD[Router RDD<br/>/api/pathology/*]
-    API --> ANA[Router Analytics<br/>/api/analytics/*]
+    U["Browser / Dashboard<br/>static/*.html"] -->|HTTP REST| API["FastAPI / Uvicorn<br/>main.py"]
+    API --> DF["Router DataFrame<br/>/api/patients/*"]
+    API --> RDD["Router RDD<br/>/api/pathology/*"]
+    API --> ANA["Router Analytics<br/>/api/analytics/*"]
 
-    DF --> CSV1[data/breast_cancer_data.csv]
-    CSV1 --> DFPROC[DataFrame / Spark SQL<br/>atau pandas]
-    RDD --> CSV2[data/mtsamples.csv]
-    CSV2 --> RDDPROC[RDD / list teks]
+    DF --> CSV1["data/breast_cancer_data.csv"]
+    CSV1 --> DFPROC["DataFrame / Spark SQL<br/>atau pandas"]
+    RDD --> CSV2["data/mtsamples.csv"]
+    CSV2 --> RDDPROC["RDD / list teks"]
 
-    DFPROC --> OUT[JSON response]
+    DFPROC --> OUT["JSON response"]
     RDDPROC --> OUT
-    ANA --> METRICS[Execution metrics<br/>in-memory]
+    ANA --> METRICS["Execution metrics<br/>in-memory"]
     METRICS --> OUT
     OUT --> U
 ```
@@ -137,19 +137,19 @@ Pada mode Spark, aliran input lokalnya adalah:
 
 ```mermaid
 flowchart TD
-    C[data/breast_cancer_data.csv] --> READCSV[spark.read.csv<br/>header=True, inferSchema=True]
-    READCSV --> DF[Spark DataFrame]
-    DF --> VIEW[Temporary view: patients]
-    VIEW --> SQL[Spark SQL filter / LIMIT]
-    SQL --> PANDAS[toPandas()]
-    PANDAS --> JSON1[JSON pasien]
+    C["data/breast_cancer_data.csv"] --> READCSV["spark.read.csv<br/>header=True, inferSchema=True"]
+    READCSV --> DF["Spark DataFrame"]
+    DF --> VIEW["Temporary view: patients"]
+    VIEW --> SQL["Spark SQL filter / LIMIT"]
+    SQL --> PANDAS["Convert to Pandas"]
+    PANDAS --> JSON1["JSON pasien"]
 
-    T[data/mtsamples.csv] --> TEXT[sparkContext.textFile]
-    TEXT --> RDD[RDD String]
-    RDD --> ACTION{Action}
-    ACTION -->|take| PREVIEW[Preview baris]
-    ACTION -->|collect| SEARCH[Pencarian keyword di Python driver]
-    SEARCH --> JSON2[JSON hasil teks]
+    T["data/mtsamples.csv"] --> TEXT["sparkContext.textFile"]
+    TEXT --> RDD["RDD String"]
+    RDD --> ACTION{"Action"}
+    ACTION -->|take| PREVIEW["Preview baris"]
+    ACTION -->|collect| SEARCH["Pencarian keyword di Python driver"]
+    SEARCH --> JSON2["JSON hasil teks"]
     PREVIEW --> JSON2
 ```
 
@@ -158,11 +158,11 @@ diakses, `main.py` menggunakan file lokal di `data/` sebagai fallback:
 
 ```mermaid
 flowchart LR
-    HDFS[HDFS /data/*.csv] --> CLIENT[hdfs.InsecureClient]
-    LOCAL[data/*.csv lokal] -. fallback jika HDFS gagal .-> CLIENT
-    CLIENT --> TEXT[list teks]
-    CLIENT --> PDF[pandas DataFrame]
-    TEXT --> JSON[JSON response]
+    HDFS["HDFS /data/*.csv"] --> CLIENT["hdfs.InsecureClient"]
+    LOCAL["data/*.csv lokal"] -. fallback jika HDFS gagal .-> CLIENT
+    CLIENT --> TEXT["list teks"]
+    CLIENT --> PDF["pandas DataFrame"]
+    TEXT --> JSON["JSON response"]
     PDF --> JSON
 ```
 
@@ -174,15 +174,15 @@ mesin dan satu thread komputasi:
 
 ```mermaid
 flowchart TB
-    subgraph APP[Proses FastAPI / Uvicorn]
-        DRIVER[Spark Driver<br/>SparkSession<br/>SparkContext]
-        EXEC[Local Executor<br/>local[1]<br/>1 execution thread]
+    subgraph APP["Proses FastAPI / Uvicorn"]
+        DRIVER["Spark Driver<br/>SparkSession<br/>SparkContext"]
+        EXEC["Local Executor<br/>local mode one thread"]
         DRIVER -->|local scheduler| EXEC
     end
 
-    NOTE[Local mode] -.-> DRIVER
-    NO_MASTER[Tidak ada Spark Master eksternal] -.-> DRIVER
-    NO_WORKER[Tidak ada Spark Worker cluster] -.-> EXEC
+    NOTE["Local mode"] -.-> DRIVER
+    NO_MASTER["Tidak ada Spark Master eksternal"] -.-> DRIVER
+    NO_WORKER["Tidak ada Spark Worker cluster"] -.-> EXEC
 ```
 
 Tidak ada Spark Master eksternal, Spark Worker, atau executor terpisah pada
@@ -202,13 +202,13 @@ cluster deployment.
 
 ```mermaid
 flowchart LR
-    CSV[breast_cancer_data.csv] --> READER[Spark CSV Reader]
-    READER --> DF[Spark DataFrame]
-    DF --> VIEW[SQL view: patients]
-    VIEW --> FILTER[SELECT id, diagnosis, radius_mean<br/>WHERE diagnosis and radius_mean]
-    FILTER --> PANDAS[toPandas()]
-    PANDAS --> RECORDS[Dictionary records]
-    RECORDS --> JSON[JSON response]
+    CSV["breast_cancer_data.csv"] --> READER["Spark CSV Reader"]
+    READER --> DF["Spark DataFrame"]
+    DF --> VIEW["SQL view: patients"]
+    VIEW --> FILTER["SELECT id, diagnosis, radius_mean<br/>WHERE diagnosis and radius_mean"]
+    FILTER --> PANDAS["Convert to Pandas"]
+    PANDAS --> RECORDS["Dictionary records"]
+    RECORDS --> JSON["JSON response"]
 ```
 
 #### Alur RDD
@@ -222,12 +222,12 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    CSV[mtsamples.csv] --> TEXT[textFile()]
-    TEXT --> RDD[RDD String]
-    RDD --> COLLECT[collect()]
-    COLLECT --> DRIVER[Python driver<br/>keyword in line.lower()]
-    DRIVER --> LIMIT[Ambil maksimal 50 baris]
-    LIMIT --> JSON[JSON response]
+    CSV["mtsamples.csv"] --> TEXT["Spark text file reader"]
+    TEXT --> RDD["RDD String"]
+    RDD --> COLLECT["Collect all rows"]
+    COLLECT --> DRIVER["Python driver<br/>keyword in line.lower()"]
+    DRIVER --> LIMIT["Ambil maksimal 50 baris"]
+    LIMIT --> JSON["JSON response"]
 ```
 
 Implementasi pencarian saat ini belum menggunakan transformasi
@@ -250,13 +250,13 @@ HDFS minimal, bukan cluster Hadoop lengkap berbasis YARN.
 
 ```mermaid
 flowchart TB
-    APP[Host: FastAPI / Uvicorn<br/>hdfs.InsecureClient]
+    APP["Host: FastAPI / Uvicorn<br/>hdfs.InsecureClient"]
 
-    subgraph DOCKER[Docker Compose network]
-        NN[NameNode<br/>Web UI/WebHDFS: 9870<br/>RPC: 9000]
-        DN[DataNode<br/>Web UI: 9864]
-        VN[(hadoop_namenode<br/>named volume)]
-        VD[(hadoop_datanode<br/>named volume)]
+    subgraph DOCKER["Docker Compose network"]
+        NN["NameNode<br/>Web UI/WebHDFS: 9870<br/>RPC: 9000"]
+        DN["DataNode<br/>Web UI: 9864"]
+        VN["hadoop_namenode<br/>named volume"]
+        VD["hadoop_datanode<br/>named volume"]
         NN -->|metadata dan koordinasi blok| DN
         NN --- VN
         DN --- VD
@@ -283,10 +283,10 @@ Dataset harus dimasukkan ke HDFS secara manual, misalnya:
 
 ```mermaid
 flowchart TD
-    HOST[data/*.csv di host] -->|docker cp| TMP[File sementara<br/>di container namenode]
-    TMP -->|hdfs dfs -put| HDFS[(HDFS /data)]
-    HDFS --> MTS[/data/mtsamples.csv/]
-    HDFS --> BC[/data/breast_cancer_data.csv/]
+    HOST["data/*.csv di host"] -->|docker cp| TMP["File sementara<br/>di container namenode"]
+    TMP -->|hdfs dfs -put|     HDFS["HDFS /data"]
+    HDFS --> MTS["/data/mtsamples.csv"]
+    HDFS --> BC["/data/breast_cancer_data.csv"]
 ```
 
 Contoh perintah:
