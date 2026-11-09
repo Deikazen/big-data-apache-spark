@@ -1,297 +1,366 @@
 # Hybrid Spark & Hadoop Dashboard
 
-Dashboard analitik data medis berbasis **FastAPI**, **Apache Spark** dan
-**Hadoop HDFS**. Aplikasi ini menyediakan antarmuka web sederhana untuk:
+Dashboard analitik data medis berbasis **FastAPI**, **Apache Spark**, dan
+**Hadoop HDFS**. Aplikasi menyediakan antarmuka web dan REST API untuk:
 
-- memfilter data pasien kanker menggunakan Spark SQL/DataFrame;
-- mencari kata kunci pada laporan patologi menggunakan Spark RDD;
-- melihat preview data terstruktur dan tidak terstruktur;
-- mengukur waktu eksekusi operasi analitik dari sisi API.
+- memfilter data pasien kanker;
+- menampilkan preview dataset terstruktur dan tidak terstruktur;
+- mencari kata kunci pada laporan patologi;
+- menerima data pasien dan teks patologi secara real-time;
+- membandingkan waktu pemrosesan antar-engine secara in-memory.
 
-> **Status implementasi:** repository ini merupakan proyek demonstrasi/laboratorium.
-> Mode aplikasi dibaca dari environment variable `EXEC_MODE` (default:
-> `hadoop`). Agar seluruh endpoint dashboard berjalan, gunakan mode `spark`.
-> Mode `hadoop` saat ini
-> menginisialisasi koneksi HDFS, tetapi router analitik masih membutuhkan state
-> Spark (`spark` dan `text_rdd`).
-
-## Daftar Isi
-
-- [Arsitektur](#arsitektur)
-- [Teknologi](#teknologi)
-- [Struktur Proyek](#struktur-proyek)
-- [Dataset](#dataset)
-- [Prasyarat](#prasyarat)
-- [Instalasi](#instalasi)
-- [Quick Start](#quick-start)
-- [Menjalankan Aplikasi](#menjalankan-aplikasi)
-- [Mode Eksekusi](#mode-eksekusi)
-- [Halaman Web](#halaman-web)
-- [API Reference](#api-reference)
-- [Contoh Penggunaan API](#contoh-penggunaan-api)
-- [Docker Hadoop HDFS](#docker-hadoop-hdfs)
-- [Troubleshooting](#troubleshooting)
-- [Catatan Pengembangan](#catatan-pengembangan)
-- [Lisensi](#lisensi)
+> Proyek ini ditujukan untuk demonstrasi/laboratorium. Belum tersedia
+> autentikasi, database aplikasi, persistence data streaming, atau konfigurasi
+> production.
 
 ## Arsitektur
 
-### Diagram komponen
-
 ```mermaid
 flowchart LR
-    U["Pengguna"] --> UI["Dashboard HTML CSS JavaScript"]
-    UI --> API["FastAPI"]
+    Browser["Dashboard HTML/CSS/JS"] --> API["FastAPI + Uvicorn"]
+    API --> Patients["DataFrame API"]
+    API --> Pathology["RDD/Text API"]
+    API --> Stream["Streaming API"]
+    API --> Metrics["Analytics API"]
 
-    API --> R["Router RDD<br/>/api/pathology"]
-    API --> DF["Router DataFrame<br/>/api/patients"]
+    Patients --> Engine{"EXEC_MODE"}
+    Pathology --> Engine
+    Stream --> Engine
+    Engine -->|spark| Spark["SparkSession local[1]"]
+    Engine -->|hadoop| Hadoop["HDFS client + pandas/list"]
 
-    R --> RDD["Spark RDD<br/>mtsamples.csv"]
-    DF --> SQL["Spark SQL DataFrame<br/>patients"]
-
-    RDD --> P["data/mtsamples.csv"]
-    SQL --> C["data/breast_cancer_data.csv"]
-
-    API -. mode hadoop .-> HDFS["Hadoop HDFS<br/>NameNode :9870"]
-    HDFS -. membaca .-> P
+    Spark --> CSV1["data/breast_cancer_data.csv"]
+    Spark --> CSV2["data/mtsamples.csv"]
+    Hadoop --> HDFS["HDFS /data/*.csv"]
+    Hadoop -. fallback .-> Local["Dataset lokal"]
 ```
 
-### Alur pemrosesan
+### Komponen utama
 
-```mermaid
-sequenceDiagram
-    participant B as Browser
-    participant F as FastAPI
-    participant S as Spark
-    participant D as Dataset
+| Komponen | Tanggung jawab |
+|---|---|
+| `main.py` | Membuat aplikasi FastAPI, memilih engine, memuat dataset, dan menyajikan halaman web |
+| `routers/dataframe_api.py` | Filter dan preview data pasien |
+| `routers/rdd_api.py` | Pencarian dan preview laporan patologi |
+| `routers/stream_api.py` | Ingest data pasien/teks dan statistik streaming |
+| `routers/analytics_api.py` | Ringkasan waktu eksekusi per operasi dan mode |
+| `static/index.html` | Dashboard utama dan monitor real-time |
+| `static/tables.html` | Preview 100 baris data pasien dan patologi |
+| `stream_producer.py` | Simulator pengiriman data melalui HTTP |
+| `docker-compose.yml` | NameNode dan DataNode HDFS minimal |
 
-    B->>F: GET /api/patients/filter
-    F->>S: Spark SQL pada temporary view patients
-    S->>D: Membaca breast_cancer_data.csv
-    D-->>S: DataFrame hasil filter
-    S-->>F: DataFrame
-    F-->>B: JSON records + metrik waktu
+Pada mode Spark, `main.py` membuat `SparkSession` dengan `local[1]`,
+memuat `mtsamples.csv` sebagai `RDD[String]`, dan membuat temporary view
+`patients` dari `breast_cancer_data.csv`. Pada mode Hadoop, file dibaca
+melalui `hdfs.InsecureClient` dan diproses menggunakan list Python serta
+pandas. Jika HDFS gagal diakses dan kedua CSV tersedia secara lokal, aplikasi
+menggunakan dataset lokal sebagai fallback.
 
-    B->>F: GET /api/pathology/search
-    F->>S: collect() dan pencarian keyword
-    S->>D: Membaca mtsamples.csv sebagai RDD
-    D-->>S: Baris teks yang cocok
-    S-->>F: Maksimal 50 baris
-    F-->>B: JSON hasil pencarian
-```
-
-## Analisis Arsitektur Proyek
-
-### 1. Arsitektur Umum dan Alur Data
-
-Struktur utama proyek adalah:
+## Struktur Proyek
 
 ```text
 .
 ├── data/
-│   ├── breast_cancer_data.csv   # Data kanker tabular
-│   └── mtsamples.csv            # Laporan patologi berbasis teks
+│   ├── breast_cancer_data.csv       # Dataset kanker tabular
+│   └── mtsamples.csv                # Dataset laporan patologi
+├── data2/
+│   ├── lab_results_batch_1..5.json  # Data batch laboratorium tambahan
+│   └── patient_encounters - Copy.csv
 ├── routers/
-│   ├── dataframe_api.py         # Endpoint DataFrame/Spark SQL
-│   ├── rdd_api.py               # Endpoint RDD/pencarian teks
-│   └── analytics_api.py         # Metrik waktu eksekusi
+│   ├── analytics_api.py
+│   ├── dataframe_api.py
+│   ├── rdd_api.py
+│   └── stream_api.py
 ├── static/
-│   ├── index.html               # Dashboard utama
-│   └── tables.html              # Preview data mentah
-├── main.py                      # Entry point FastAPI dan pemilih mode
-├── docker-compose.yml           # Infrastruktur Hadoop HDFS
+│   ├── index.html
+│   └── tables.html
+├── docker-compose.yml
+├── main.py
+├── stream_producer.py
 └── README.md
 ```
 
-Komponen aplikasi dan aliran datanya:
+Dataset pada `data2/` belum direferensikan oleh `main.py` maupun router,
+sehingga belum muncul pada dashboard atau endpoint yang tersedia.
 
-```mermaid
-flowchart LR
-    U["Browser / Dashboard<br/>static/*.html"] -->|HTTP REST| API["FastAPI / Uvicorn<br/>main.py"]
-    API --> DF["Router DataFrame<br/>/api/patients/*"]
-    API --> RDD["Router RDD<br/>/api/pathology/*"]
-    API --> ANA["Router Analytics<br/>/api/analytics/*"]
+## Dataset
 
-    DF --> CSV1["data/breast_cancer_data.csv"]
-    CSV1 --> DFPROC["DataFrame / Spark SQL<br/>atau pandas"]
-    RDD --> CSV2["data/mtsamples.csv"]
-    CSV2 --> RDDPROC["RDD / list teks"]
+### `data/breast_cancer_data.csv`
 
-    DFPROC --> OUT["JSON response"]
-    RDDPROC --> OUT
-    ANA --> METRICS["Execution metrics<br/>in-memory"]
-    METRICS --> OUT
-    OUT --> U
+Dataset tabular dengan kolom `id`, `diagnosis`, `radius_mean`, serta fitur
+tumor lain seperti `texture_mean`, `perimeter_mean`, `area_mean`,
+`smoothness_mean`, dan fitur `*_worst`. Nilai diagnosis umumnya:
+
+- `M`: malignant;
+- `B`: benign.
+
+### `data/mtsamples.csv`
+
+Dataset teks laporan medis dengan kolom seperti `description`,
+`medical_specialty`, `sample_name`, `transcription`, dan `keywords`.
+Pada mode Spark, file ini dibaca per baris sebagai RDD. Pada mode Hadoop,
+isinya dimuat sebagai list baris.
+
+### `data2/`
+
+Berisi lima batch hasil laboratorium JSON Lines dan satu CSV patient
+encounters. File ini merupakan data tambahan yang belum digunakan oleh
+implementasi saat ini.
+
+## Prasyarat dan Instalasi
+
+- Python 3.10 atau lebih baru;
+- Java yang kompatibel dengan versi PySpark;
+- Docker Desktop dan Docker Compose, hanya untuk mode HDFS;
+- Windows: PySpark mungkin memerlukan konfigurasi Java/Hadoop tambahan,
+  tergantung versi lingkungan lokal.
+
+Repository belum menyediakan `requirements.txt` atau `pyproject.toml`.
+Instal dependency secara manual di virtual environment:
+
+```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install fastapi uvicorn pandas pyspark hdfs requests
 ```
 
-- `breast_cancer_data.csv` berisi data terstruktur dengan kolom seperti
-  `id`, `diagnosis`, `radius_mean`, dan fitur tumor lainnya.
-- `mtsamples.csv` berisi laporan patologi, transkripsi, spesialisasi medis,
-  dan keywords.
-- `main.py` membuat aplikasi FastAPI, membaca `EXEC_MODE`, lalu menginisialisasi
-  Spark atau koneksi HDFS.
-- `dataframe_api.py` menangani filter diagnosis/radius dan preview pasien.
-- `rdd_api.py` menangani pencarian keyword dan preview baris laporan patologi.
-- `analytics_api.py` menyimpan jumlah, rata-rata, dan waktu eksekusi terakhir
-  secara in-memory selama proses aplikasi berjalan.
+Jika PowerShell memblokir aktivasi:
 
-Pada mode Spark, aliran input lokalnya adalah:
-
-```mermaid
-flowchart TD
-    C["data/breast_cancer_data.csv"] --> READCSV["spark.read.csv<br/>header=True, inferSchema=True"]
-    READCSV --> DF["Spark DataFrame"]
-    DF --> VIEW["Temporary view: patients"]
-    VIEW --> SQL["Spark SQL filter / LIMIT"]
-    SQL --> PANDAS["Convert to Pandas"]
-    PANDAS --> JSON1["JSON pasien"]
-
-    T["data/mtsamples.csv"] --> TEXT["sparkContext.textFile"]
-    TEXT --> RDD["RDD String"]
-    RDD --> ACTION{"Action"}
-    ACTION -->|take| PREVIEW["Preview baris"]
-    ACTION -->|collect| SEARCH["Pencarian keyword di Python driver"]
-    SEARCH --> JSON2["JSON hasil teks"]
-    PREVIEW --> JSON2
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\venv\Scripts\Activate.ps1
 ```
 
-Pada mode Hadoop, aplikasi membaca dataset dari HDFS. Jika HDFS tidak dapat
-diakses, `main.py` menggunakan file lokal di `data/` sebagai fallback:
+## Menjalankan Aplikasi
 
-```mermaid
-flowchart LR
-    HDFS["HDFS /data/*.csv"] --> CLIENT["hdfs.InsecureClient"]
-    LOCAL["data/*.csv lokal"] -. fallback jika HDFS gagal .-> CLIENT
-    CLIENT --> TEXT["list teks"]
-    CLIENT --> PDF["pandas DataFrame"]
-    TEXT --> JSON["JSON response"]
-    PDF --> JSON
+Jalankan dari root repository. `EXEC_MODE` membaca mode dari environment
+variable dan default-nya adalah `hadoop`.
+
+### Mode Spark
+
+Mode ini paling sederhana untuk demonstrasi karena menggunakan dataset lokal:
+
+```powershell
+$env:EXEC_MODE = "spark"
+python -m uvicorn main:app --reload
 ```
 
-### 2. Arsitektur Pemrosesan Mode Spark
+### Mode Hadoop
 
-Mode Spark diaktifkan dengan `EXEC_MODE=spark`. `main.py` membuat
-`SparkSession` menggunakan `local[1]`, sehingga Spark berjalan pada satu
-mesin dan satu thread komputasi:
-
-```mermaid
-flowchart TB
-    subgraph APP["Proses FastAPI / Uvicorn"]
-        DRIVER["Spark Driver<br/>SparkSession<br/>SparkContext"]
-        EXEC["Local Executor<br/>local mode one thread"]
-        DRIVER -->|local scheduler| EXEC
-    end
-
-    NOTE["Local mode"] -.-> DRIVER
-    NO_MASTER["Tidak ada Spark Master eksternal"] -.-> DRIVER
-    NO_WORKER["Tidak ada Spark Worker cluster"] -.-> EXEC
+```powershell
+$env:EXEC_MODE = "hadoop"
+python -m uvicorn main:app --reload
 ```
 
-Tidak ada Spark Master eksternal, Spark Worker, atau executor terpisah pada
-repository ini. Dengan kata lain, `local[1]` adalah local mode, bukan Spark
-cluster deployment.
+Mode Hadoop mencoba membaca `/data/mtsamples.csv` dan
+`/data/breast_cancer_data.csv` dari HDFS. Jika HDFS tidak tersedia, aplikasi
+akan memakai file pada `data/` apabila keduanya ada.
 
-#### Alur DataFrame dan Spark SQL
+> Nilai `EXEC_MODE` yang didukung adalah `spark` dan `hadoop`. Nilai lain tidak
+> menginisialisasi engine dan dapat menyebabkan endpoint gagal.
 
-1. `spark.read.csv(..., header=True, inferSchema=True)` membaca
-   `breast_cancer_data.csv`.
-2. Data dibentuk menjadi Spark DataFrame.
-3. DataFrame didaftarkan sebagai temporary view bernama `patients`.
-4. Endpoint `/api/patients/filter` menjalankan query SQL untuk memfilter
-   `diagnosis` dan `radius_mean`.
-5. Endpoint memanggil `toPandas()`, mengubah hasil ke dictionary, lalu
-   mengembalikannya sebagai JSON.
+Halaman yang tersedia:
 
-```mermaid
-flowchart LR
-    CSV["breast_cancer_data.csv"] --> READER["Spark CSV Reader"]
-    READER --> DF["Spark DataFrame"]
-    DF --> VIEW["SQL view: patients"]
-    VIEW --> FILTER["SELECT id, diagnosis, radius_mean<br/>WHERE diagnosis and radius_mean"]
-    FILTER --> PANDAS["Convert to Pandas"]
-    PANDAS --> RECORDS["Dictionary records"]
-    RECORDS --> JSON["JSON response"]
+| URL | Fungsi |
+|---|---|
+| <http://localhost:8000/> | Dashboard utama |
+| <http://localhost:8000/tables> | Preview dataset |
+| <http://localhost:8000/docs> | Swagger UI |
+| <http://localhost:8000/redoc> | ReDoc |
+| <http://localhost:8000/api/mode> | Mode dan engine aktif |
+
+## API Reference
+
+Semua endpoint mengembalikan JSON. Kegagalan pemrosesan dikembalikan sebagai
+HTTP `500` dengan field `detail`.
+
+### Mode
+
+#### `GET /api/mode`
+
+Mengembalikan mode aktif dan nama engine:
+
+```json
+{
+  "mode": "spark",
+  "engine": "Apache Spark (SQL/RDD)"
+}
 ```
 
-#### Alur RDD
+### Data pasien
 
-1. `spark.sparkContext.textFile("data/mtsamples.csv")` membuat
-   `RDD[String]`.
-2. `/api/pathology/all` menggunakan `take(limit)`.
-3. `/api/pathology/search` menggunakan `collect()`, kemudian pencarian
-   keyword dilakukan oleh Python driver.
-4. Hasil pencarian dibatasi maksimal 50 baris.
+#### `GET /api/patients/filter`
 
-```mermaid
-flowchart LR
-    CSV["mtsamples.csv"] --> TEXT["Spark text file reader"]
-    TEXT --> RDD["RDD String"]
-    RDD --> COLLECT["Collect all rows"]
-    COLLECT --> DRIVER["Python driver<br/>keyword in line.lower()"]
-    DRIVER --> LIMIT["Ambil maksimal 50 baris"]
-    LIMIT --> JSON["JSON response"]
+| Parameter | Tipe | Default | Keterangan |
+|---|---|---:|---|
+| `min_radius` | float | `20.0` | Nilai minimum `radius_mean` |
+| `diag_type` | string | `M` | Diagnosis yang dicari |
+
+Response berisi `mode`, `execution_time_sec`, `total_found`, dan `data`.
+Pada mode Spark, query memakai temporary view `patients`; pada mode Hadoop,
+filter dilakukan pada pandas DataFrame.
+
+#### `GET /api/patients/all`
+
+| Parameter | Tipe | Default | Keterangan |
+|---|---|---:|---|
+| `limit` | integer | `100` | Jumlah baris maksimum |
+
+Response berisi `mode`, `columns`, dan `data`. Kolom yang diawali `Unnamed`
+dihilangkan dari output.
+
+### Laporan patologi
+
+#### `GET /api/pathology/search`
+
+| Parameter | Tipe | Default | Keterangan |
+|---|---|---:|---|
+| `keyword` | string | `cancer` | Pencarian tanpa membedakan kapitalisasi |
+
+Response berisi `mode`, `execution_time_sec`, `keyword`, `total_found`, dan
+maksimal 50 baris pada `data`. Pada mode Spark, implementasi saat ini
+mengambil seluruh RDD ke driver dengan `collect()` sebelum pencarian.
+
+#### `GET /api/pathology/all`
+
+| Parameter | Tipe | Default | Keterangan |
+|---|---|---:|---|
+| `limit` | integer | `100` | Jumlah baris maksimum |
+
+Response berisi `mode` dan `data`.
+
+### Streaming
+
+#### `POST /api/stream/patient`
+
+Menerima payload JSON pasien. Field utama:
+
+```json
+{
+  "id": 900001,
+  "diagnosis": "M",
+  "radius_mean": 20.5,
+  "texture_mean": 15.0,
+  "perimeter_mean": 120.0,
+  "area_mean": 1000.0,
+  "extra_features": {
+    "custom_field": "optional"
+  }
+}
 ```
 
-Implementasi pencarian saat ini belum menggunakan transformasi
-`text_rdd.filter(...)`; seluruh baris dikumpulkan ke driver terlebih dahulu.
-Karena itu pendekatan ini cocok untuk demonstrasi, tetapi kurang ideal untuk
-dataset teks yang sangat besar.
+`id` bersifat opsional dan dibuat otomatis jika tidak dikirim. Field
+`extra_features` digabungkan ke record sebelum disimpan.
 
-### 3. Infrastruktur Hadoop melalui Docker Compose
+#### `POST /api/stream/pathology`
 
-`docker-compose.yml` hanya mendefinisikan dua service HDFS:
+Payload minimal:
+
+```json
+{
+  "text": "Malignant carcinoma cells observed.",
+  "sample_name": "Live Stream Sample",
+  "medical_specialty": "Pathology"
+}
+```
+
+#### `GET /api/stream/status`
+
+Mengembalikan jumlah data, latensi ingest per mode, riwayat streaming terbaru,
+dan catatan perbandingan engine. Riwayat disimpan dalam buffer maksimum 50
+item, sedangkan response mengembalikan maksimal 15 item terbaru.
+
+Data streaming hanya disimpan di memori proses FastAPI. Data tidak ditulis
+kembali ke file CSV atau HDFS dan akan hilang saat proses restart.
+
+### Analytics
+
+#### `GET /api/analytics/execution-summary`
+
+Mengembalikan jumlah, rata-rata, dan waktu eksekusi terakhir untuk operasi
+`filter_data`, `cari_teks`, dan `stream_ingest`, dikelompokkan berdasarkan mode
+`spark` dan `hadoop`. Metrik juga hanya tersimpan di memori proses.
+
+## Contoh Pemanggilan API
+
+```powershell
+# Mode aktif
+curl http://localhost:8000/api/mode
+
+# Filter pasien malignant dengan radius minimum 20
+curl "http://localhost:8000/api/patients/filter?min_radius=20&diag_type=M"
+
+# Ambil 10 pasien
+curl "http://localhost:8000/api/patients/all?limit=10"
+
+# Cari keyword pada laporan patologi
+curl "http://localhost:8000/api/pathology/search?keyword=tumor"
+
+# Ambil 20 baris laporan
+curl "http://localhost:8000/api/pathology/all?limit=20"
+
+# Kirim satu data pasien
+curl -X POST http://localhost:8000/api/stream/patient `
+  -H "Content-Type: application/json" `
+  -d '{\"diagnosis\":\"M\",\"radius_mean\":21.2}'
+
+# Lihat statistik streaming
+curl http://localhost:8000/api/stream/status
+```
+
+## Simulasi Streaming
+
+`stream_producer.py` membaca data referensi dari kedua CSV pada `data/`, lalu
+mengirimkannya ke API streaming melalui HTTP. Jalankan di terminal terpisah
+setelah server aktif:
+
+```powershell
+# Pasien dan patologi, tanpa batas sampai CTRL+C
+python stream_producer.py
+
+# Interval satu detik
+python stream_producer.py --interval 1.0
+
+# Hanya pasien, kirim 50 record
+python stream_producer.py --type patients --count 50 --interval 2.0
+
+# Hanya teks patologi
+python stream_producer.py --type pathology --count 20
+
+# Target server berbeda
+python stream_producer.py --target http://localhost:8001
+```
+
+Argumen yang tersedia:
+
+| Argumen | Default | Nilai |
+|---|---|---|
+| `--target` | `http://localhost:8000` | Base URL FastAPI |
+| `--interval` | `1.5` | Jeda antar pengiriman dalam detik |
+| `--type` | `both` | `patients`, `pathology`, atau `both` |
+| `--count` | `0` | Jumlah data; `0` berarti tanpa batas |
+
+Dashboard utama menyediakan polling status stream dan menampilkan waktu
+ingest server serta round-trip time dari simulator.
+
+## Menjalankan Hadoop HDFS dengan Docker
+
+Compose hanya menjalankan HDFS minimal:
 
 | Service | Peran | Port host |
 |---|---|---|
-| `namenode` | Metadata HDFS, RPC, dan Web UI/WebHDFS | `9870`, `9000` |
-| `datanode` | Penyimpanan blok data HDFS | `9864` |
+| `namenode` | Metadata HDFS, RPC, Web UI/WebHDFS | `9870`, `9000` |
+| `datanode` | Penyimpanan blok data | `9864` |
 
-Tidak ada YARN ResourceManager, NodeManager, Hadoop History Server, Spark
-Master, atau Spark Worker dalam Compose ini. Jadi konfigurasi tersebut adalah
-HDFS minimal, bukan cluster Hadoop lengkap berbasis YARN.
+Tidak ada YARN, Spark Master, atau Spark Worker dalam konfigurasi ini.
 
-```mermaid
-flowchart TB
-    APP["Host: FastAPI / Uvicorn<br/>hdfs.InsecureClient"]
-
-    subgraph DOCKER["Docker Compose network"]
-        NN["NameNode<br/>Web UI/WebHDFS: 9870<br/>RPC: 9000"]
-        DN["DataNode<br/>Web UI: 9864"]
-        VN["hadoop_namenode<br/>named volume"]
-        VD["hadoop_datanode<br/>named volume"]
-        NN -->|metadata dan koordinasi blok| DN
-        NN --- VN
-        DN --- VD
-    end
-
-    APP -->|HTTP localhost:9870| NN
-    DN -->|hostname namenode<br/>hdfs://namenode:9000| NN
+```powershell
+docker compose up -d
+docker compose ps
 ```
 
-Detail komunikasi:
-
-- Kedua container berada pada network default Docker Compose.
-- `datanode` menemukan NameNode melalui hostname `namenode`.
-- `CORE_CONF_fs_defaultFS=hdfs://namenode:9000` menetapkan NameNode sebagai
-  filesystem default.
-- `SERVICE_PRECONDITION=namenode:9870` membuat DataNode menunggu NameNode
-  siap.
-- Named volume `hadoop_namenode` menyimpan metadata NameNode.
-- Named volume `hadoop_datanode` menyimpan blok data DataNode.
-- Folder host `data/` tidak otomatis dimount ke container dan tidak otomatis
-  masuk HDFS.
-
-Dataset harus dimasukkan ke HDFS secara manual, misalnya:
-
-```mermaid
-flowchart TD
-    HOST["data/*.csv di host"] -->|docker cp| TMP["File sementara<br/>di container namenode"]
-    TMP -->|hdfs dfs -put|     HDFS["HDFS /data"]
-    HDFS --> MTS["/data/mtsamples.csv"]
-    HDFS --> BC["/data/breast_cancer_data.csv"]
-```
-
-Contoh perintah:
+Salin dataset dari host ke container lalu masukkan ke HDFS:
 
 ```powershell
 docker cp data\mtsamples.csv namenode:/tmp/mtsamples.csv
@@ -299,352 +368,36 @@ docker cp data\breast_cancer_data.csv namenode:/tmp/breast_cancer_data.csv
 docker exec namenode hdfs dfs -mkdir -p /data
 docker exec namenode hdfs dfs -put -f /tmp/mtsamples.csv /data/
 docker exec namenode hdfs dfs -put -f /tmp/breast_cancer_data.csv /data/
+docker exec namenode hdfs dfs -ls /data
 ```
 
-Dalam mode Hadoop, `InsecureClient("http://localhost:9870", user="root")`
-membaca file melalui NameNode/WebHDFS. NameNode mengelola metadata dan lokasi
-blok, sedangkan isi blok disimpan oleh DataNode. Setelah dibaca, pemrosesan
-berlangsung di memori proses FastAPI menggunakan list Python dan pandas; tidak
-ada job MapReduce atau Spark-on-YARN.
-
-## Teknologi
-
-| Komponen | Peran |
-|---|---|
-| Python | Bahasa pemrograman utama |
-| FastAPI | REST API dan routing |
-| Uvicorn | Application server ASGI |
-| PySpark | Pemrosesan DataFrame, Spark SQL, dan RDD |
-| Hadoop HDFS | Penyimpanan/akses data terdistribusi opsional |
-| `hdfs` | Client Python untuk HDFS |
-| HTML, CSS, JavaScript | Dashboard frontend |
-| Docker Compose | Menjalankan NameNode dan DataNode |
-
-## Struktur Proyek
-
-```text
-.
-├── data/
-│   ├── breast_cancer_data.csv    # Data kanker berbentuk tabular
-│   └── mtsamples.csv             # Laporan patologi berbentuk teks
-├── routers/
-│   ├── dataframe_api.py          # Endpoint Spark SQL/DataFrame
-│   └── rdd_api.py                # Endpoint Spark RDD
-├── static/
-│   ├── index.html                # Dashboard analitik
-│   └── tables.html               # Preview data mentah
-├── docker-compose.yml            # Konfigurasi Hadoop HDFS
-├── main.py                       # Inisialisasi FastAPI dan Spark/HDFS
-└── README.md
-```
-
-## Dataset
-
-### `data/breast_cancer_data.csv`
-
-Dataset tabular dengan kolom utama:
-
-- `id`: identitas sampel;
-- `diagnosis`: `M` untuk malignant dan `B` untuk benign;
-- `radius_mean`: nilai radius rata-rata;
-- kolom fitur tumor lainnya seperti `texture_mean`, `area_mean`,
-  `smoothness_mean`, dan fitur `*_worst`.
-
-File ini dibaca oleh Spark dengan `header=True` dan `inferSchema=True`, lalu
-daftarkan sebagai temporary view bernama `patients`.
-
-### `data/mtsamples.csv`
-
-Dataset laporan medis tidak terstruktur. Kolom yang tersedia antara lain
-`description`, `medical_specialty`, `sample_name`, `transcription`, dan
-`keywords`. File ini dimuat sebagai RDD berbasis baris teks untuk pencarian
-keyword.
-
-## Prasyarat
-
-- Python 3.10+;
-- Java yang kompatibel dengan versi PySpark yang digunakan;
-- Apache Spark/PySpark;
-- Docker Desktop dan Docker Compose, hanya jika ingin menjalankan HDFS;
-- Windows: konfigurasi Spark lokal dapat memerlukan `winutils` sesuai versi
-  Hadoop yang dipakai.
-
-Repository belum menyediakan `requirements.txt`. Instal dependensi Python
-secara manual:
-
-```powershell
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install fastapi uvicorn pyspark hdfs
-```
-
-Jika PowerShell menolak aktivasi environment, jalankan:
-
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\venv\Scripts\Activate.ps1
-```
-
-## Instalasi
-
-1. Clone repository dan masuk ke direktori proyek.
-2. Buat serta aktifkan virtual environment.
-3. Instal dependensi Python seperti pada bagian [Prasyarat](#prasyarat).
-4. Pastikan dataset tersedia di direktori `data/`.
-5. Untuk penggunaan mode Spark, ubah konfigurasi berikut di `main.py`:
-
-   ```python
-   EXEC_MODE = "spark"
-   ```
-
-## Quick Start
-
-Jika ingin langsung mencoba seluruh fitur dashboard:
-
-1. Instal dependency Python di virtual environment.
-2. Set mode ke Spark.
-3. Jalankan Uvicorn.
-
-```powershell
-$env:EXEC_MODE = "spark"
-python -m uvicorn main:app --reload
-```
-
-## Menjalankan Aplikasi
-
-Jalankan server dari root repository:
-
-```powershell
-python -m uvicorn main:app --reload
-```
-
-Buka halaman berikut di browser:
-
-- Dashboard: <http://localhost:8000/>
-- Tabel data: <http://localhost:8000/tables>
-- Dokumentasi Swagger: <http://localhost:8000/docs>
-- Dokumentasi ReDoc: <http://localhost:8000/redoc>
-
-Spark dijalankan dalam `local[1]` agar lebih stabil pada Windows. Konfigurasi
-Arrow juga dimatikan di `main.py` untuk menghindari masalah konversi Pandas.
-
-## Mode Eksekusi
-
-### Mode `spark`
-
-Mode ini:
-
-1. membuat `SparkSession` lokal;
-2. memuat `data/mtsamples.csv` sebagai `text_rdd`;
-3. memuat `data/breast_cancer_data.csv` sebagai DataFrame;
-4. membuat temporary view SQL bernama `patients`;
-5. mengaktifkan endpoint DataFrame dan RDD.
-
-Gunakan mode ini untuk menjalankan dashboard secara lengkap.
-
-### Mode `hadoop`
-
-Mode ini membuat `InsecureClient` ke:
-
-```text
-http://localhost:9870
-```
-
-dan mencoba membaca `/data/mtsamples.csv` dari HDFS. Dataset harus sudah
-tersedia di HDFS. Pada implementasi saat ini, mode ini belum membuat
-`SparkSession` dan `text_rdd`, sehingga endpoint analitik dashboard belum dapat
-digunakan sepenuhnya tanpa pengembangan lanjutan pada `main.py`.
-
-## Halaman Web
-
-### Dashboard utama `/`
-
-Dashboard memiliki dua panel:
-
-1. **Filter Rekam Medis (DataFrame)**  
-   Memfilter pasien berdasarkan diagnosis dan batas minimum `radius_mean`.
-2. **Pencarian Teks Patologi (RDD)**  
-   Mencari keyword pada baris laporan patologi dan menampilkan maksimal 50
-   hasil.
-
-Kedua panel otomatis memuat data ketika halaman dibuka.
-
-### Tabel data `/tables`
-
-Menampilkan:
-
-- maksimal 100 baris data pasien dari endpoint DataFrame;
-- maksimal 100 baris data laporan patologi dari endpoint RDD.
-
-## API Reference
-
-Semua endpoint mengembalikan JSON. Jika terjadi kegagalan pemrosesan, API
-mengembalikan HTTP `500` dengan field `detail`.
-
-### DataFrame API
-
-#### `GET /api/patients/filter`
-
-Parameter query:
-
-| Parameter | Tipe | Default | Keterangan |
-|---|---|---:|---|
-| `min_radius` | float | `20.0` | Nilai minimum `radius_mean` |
-| `diag_type` | string | `M` | Diagnosis, umumnya `M` atau `B` |
-
-Response berisi `execution_time_sec`, `total_found`, dan `data`.
-
-#### `GET /api/patients/all`
-
-Parameter query:
-
-| Parameter | Tipe | Default | Keterangan |
-|---|---|---:|---|
-| `limit` | integer | `100` | Jumlah baris maksimum |
-
-Response berisi `columns` dan `data`.
-
-### RDD API
-
-#### `GET /api/pathology/search`
-
-Parameter query:
-
-| Parameter | Tipe | Default | Keterangan |
-|---|---|---:|---|
-| `keyword` | string | `cancer` | Teks yang dicari tanpa membedakan kapitalisasi |
-
-Response berisi `execution_time_sec`, `keyword`, dan maksimal 50 baris pada
-`data`.
-
-#### `GET /api/pathology/all`
-
-Parameter query:
-
-| Parameter | Tipe | Default | Keterangan |
-|---|---|---:|---|
-| `limit` | integer | `100` | Jumlah baris maksimum |
-
-Response berisi `data` berupa baris teks.
-
-## Contoh Penggunaan API
-
-```powershell
-# Filter pasien malignant dengan radius minimum 20
-curl "http://localhost:8000/api/patients/filter?min_radius=20&diag_type=M"
-
-# Ambil 10 baris data pasien
-curl "http://localhost:8000/api/patients/all?limit=10"
-
-# Cari keyword pada laporan patologi
-curl "http://localhost:8000/api/pathology/search?keyword=tumor"
-
-# Ambil 20 baris pertama RDD
-curl "http://localhost:8000/api/pathology/all?limit=20"
-```
-
-
-## Simulasi Data Real-Time (Streaming)
-
-Proyek ini dilengkapi dengan script simulator data real-time: [stream_producer.py](stream_producer.py). Script ini membaca data referensi dari file CSV (reast_cancer_data.csv dan mtsamples.csv) lalu mengirimkan baris data secara berkala (streaming) ke server FastAPI.
-
-Data yang dialirkan akan langsung ditangkap oleh server pada engine yang sedang aktif:
-- **Mode Spark:** Data baru di-union secara dinamis ke DataFrame Spark dan temporary view patients, serta buffer teks RDD.
-- **Mode Hadoop:** Data baru di-inject ke DataFrame pasien Hadoop dan buffer teks HDFS.
-
-### Menjalankan Simulator Streaming
-
-Pastikan server FastAPI sudah menyala di http://localhost:8000, lalu di terminal terpisah jalankan:
-
-`powershell
-# Alirkan data pasien dan teks patologi secara bergantian (default 1.5 detik per data)
-python stream_producer.py
-
-# Mengatur interval pengiriman data (misal 1 detik)
-python stream_producer.py --interval 1.0
-
-# Hanya mengirim data pasien kanker sebanyak 50 data
-python stream_producer.py --type patients --count 50 --interval 2.0
-`
-
-Dashboard web di http://localhost:8000/ memiliki panel **Real-Time Data Stream Monitor** yang akan menampilkan feed live dan otomatis memperbarui tabel saat data baru masuk.
-
-## Docker Hadoop HDFS
-
-Jalankan cluster HDFS:
-
-```powershell
-docker compose up -d
-docker compose ps
-```
-
-Antarmuka NameNode tersedia di <http://localhost:9870>. Untuk memasukkan
-dataset ke HDFS, gunakan shell container NameNode:
-
-```powershell
-docker exec -it namenode bash
-mkdir -p /data
-hdfs dfs -put -f /path/di/container/mtsamples.csv /data/mtsamples.csv
-hdfs dfs -ls /data
-exit
-```
-
-Perintah `hdfs dfs -put` harus dijalankan terhadap file yang memang tersedia
-di dalam container. Jika file masih berada di host, salin terlebih dahulu
-dengan `docker cp`.
-
-Hentikan layanan HDFS dengan:
+NameNode Web UI tersedia di <http://localhost:9870>. Hentikan container
+dengan:
 
 ```powershell
 docker compose down
 ```
 
-## Troubleshooting
+Named volume `hadoop_namenode` menyimpan metadata NameNode dan
+`hadoop_datanode` menyimpan blok DataNode. Direktori host `data/` tidak
+otomatis dimount ke container.
 
-### `AttributeError: 'State' object has no attribute 'spark'`
+## Catatan Teknis dan Batasan
 
-Pastikan `EXEC_MODE = "spark"` di `main.py`, lalu restart Uvicorn.
-
-### `Java gateway process exited before sending its port number`
-
-Periksa instalasi Java dan variabel `JAVA_HOME`. Pastikan versi Java cocok
-dengan PySpark yang terpasang dan jalankan ulang virtual environment.
-
-### HDFS tidak dapat diakses di port `9870`
-
-Pastikan container berjalan:
-
-```powershell
-docker compose ps
-docker compose logs namenode
-```
-
-Pastikan juga port `9870` tidak sedang digunakan aplikasi lain.
-
-### Hasil API terlalu besar atau proses lambat
-
-Gunakan parameter `limit` untuk endpoint `/all`. Endpoint pencarian RDD
-mengumpulkan data dengan `collect()` dan membatasi response menjadi 50 baris,
-tetapi tetap dapat memakai memori besar jika dataset bertambah signifikan.
-
-## Catatan Pengembangan
-
-- `main.py` saat ini menyimpan pilihan mode secara hard-coded melalui
-  `EXEC_MODE`; konfigurasi environment variable dapat ditambahkan untuk
-  deployment yang lebih fleksibel.
-- Query DataFrame dibangun dari parameter request. Untuk penggunaan produksi,
-  tambahkan validasi input dan gunakan pendekatan yang menghindari interpolasi
-  SQL langsung.
-- `toPandas()` cocok untuk preview berukuran kecil, bukan untuk mengirim
-  keseluruhan dataset berukuran besar.
-- File `__pycache__` dan environment lokal sebaiknya tidak di-commit ke
-  repository.
-- Tambahkan `requirements.txt` atau `pyproject.toml` agar instalasi dependency
-  dapat direproduksi.
+- `local[1]` dipilih untuk mengurangi masalah kompatibilitas PySpark di
+  Windows; ini bukan deployment cluster Spark.
+- Konversi `toPandas()` dan response JSON cocok untuk preview kecil, bukan
+  untuk mengirim seluruh dataset besar.
+- Pencarian patologi mode Spark memakai `collect()`, sehingga seluruh RDD
+  dapat masuk ke memori driver sebelum hasil dibatasi menjadi 50 baris.
+- Query filter Spark menggunakan interpolasi string SQL. Untuk deployment
+  production, parameter perlu divalidasi dan query perlu dibangun dengan cara
+  yang lebih aman.
+- Tidak ada persistence, autentikasi, pembatasan akses, atau logging terpusat.
+- Tidak tersedia test suite, dependency lockfile, maupun file lisensi di
+  repository saat ini.
 
 ## Lisensi
 
-Repository ini belum menyertakan berkas lisensi. Tambahkan lisensi proyek
-secara eksplisit sebelum digunakan atau didistribusikan di luar kebutuhan
-internal/pembelajaran.
+Repository ini belum menyertakan berkas lisensi. Tambahkan lisensi eksplisit
+sebelum proyek didistribusikan di luar kebutuhan internal atau pembelajaran.
