@@ -9,8 +9,9 @@ Dashboard analitik data medis berbasis **FastAPI**, **Apache Spark** dan
 - mengukur waktu eksekusi operasi analitik dari sisi API.
 
 > **Status implementasi:** repository ini merupakan proyek demonstrasi/laboratorium.
-> Mode aplikasi ditentukan langsung di `main.py` melalui `EXEC_MODE`. Agar seluruh
-> endpoint dashboard berjalan, gunakan mode `spark`. Mode `hadoop` saat ini
+> Mode aplikasi dibaca dari environment variable `EXEC_MODE` (default:
+> `hadoop`). Agar seluruh endpoint dashboard berjalan, gunakan mode `spark`.
+> Mode `hadoop` saat ini
 > menginisialisasi koneksi HDFS, tetapi router analitik masih membutuhkan state
 > Spark (`spark` dan `text_rdd`).
 
@@ -22,6 +23,7 @@ Dashboard analitik data medis berbasis **FastAPI**, **Apache Spark** dan
 - [Dataset](#dataset)
 - [Prasyarat](#prasyarat)
 - [Instalasi](#instalasi)
+- [Quick Start](#quick-start)
 - [Menjalankan Aplikasi](#menjalankan-aplikasi)
 - [Mode Eksekusi](#mode-eksekusi)
 - [Halaman Web](#halaman-web)
@@ -395,6 +397,19 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
    ```python
    EXEC_MODE = "spark"
    ```
+
+## Quick Start
+
+Jika ingin langsung mencoba seluruh fitur dashboard:
+
+1. Instal dependency Python di virtual environment.
+2. Set mode ke Spark.
+3. Jalankan Uvicorn.
+
+```powershell
+$env:EXEC_MODE = "spark"
+python -m uvicorn main:app --reload
+```
 
 ## Menjalankan Aplikasi
 
