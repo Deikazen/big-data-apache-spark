@@ -229,6 +229,7 @@
 <body>
     <h2>🩺 Dashboard Analisis Medis <span id="mode-badge" style="font-size: 0.6em; padding: 4px 10px; border-radius: 6px; background: #e2e8f0; color: #333; vertical-align: middle;">Memuat Mode...</span></h2>
     <a href="/tables" class="nav-btn">Lihat Full Raw Data ➔</a>
+    <a href="/lab" class="nav-btn">Clinical Laboratory Analytics (data2) ➔</a>
 
     <div class="container">
 
@@ -587,7 +588,10 @@
             const labels = {
                 filter_data: 'Filter Data (DataFrame)',
                 cari_teks: 'Cari Teks (RDD)',
-                stream_ingest: 'Ingest Stream Real-Time'
+                stream_ingest: 'Ingest Stream Real-Time',
+                lab_ingest: 'Lab: Ingest Batch (data2)',
+                lab_simple_agg: 'Lab: Agregasi Sederhana (A)',
+                lab_relational: 'Lab: Join + Temporal (B)'
             };
             const values = ['spark', 'hadoop']
                 .map(mode => operationData[mode].average_execution_time_sec)

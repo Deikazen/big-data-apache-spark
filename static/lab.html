@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Clinical Laboratory Data Analytics</title>
+<style>
+    body { font-family: 'Segoe UI', Arial, sans-serif; margin: 24px; background: #f8fafc; color: #1e293b; }
+    h2 { margin-bottom: 4px; } h3 { margin: 0 0 8px; }
+    .sub { color: #64748b; font-size: .9em; margin-bottom: 16px; }
+    .bar { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 20px; align-items: center; }
+    button, a.btn { padding: 8px 14px; border: 0; border-radius: 6px; background: #0284c7; color: #fff; cursor: pointer; text-decoration: none; font-size: .9em; }
+    button.alt { background: #64748b; } button.warn { background: #dc2626; }
+    .card { background: #fff; border-radius: 10px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+    .kpi { background: #f1f5f9; border-radius: 8px; padding: 10px 12px; }
+    .kpi b { display: block; font-size: 1.35em; color: #0284c7; } .kpi span { font-size: .78em; color: #64748b; }
+    table { border-collapse: collapse; width: 100%; font-size: .85em; margin-top: 8px; }
+    th, td { border-bottom: 1px solid #e2e8f0; padding: 6px 8px; text-align: left; }
+    th { background: #f1f5f9; } td.n { text-align: right; font-variant-numeric: tabular-nums; }
+    .track { background: #e2e8f0; border-radius: 4px; height: 12px; min-width: 120px; }
+    .fill { background: #0284c7; height: 12px; border-radius: 4px; } .fill.red { background: #dc2626; }
+    .tag { display: inline-block; font-size: .72em; padding: 2px 8px; border-radius: 10px; background: #e0f2fe; color: #0369a1; margin-left: 6px; }
+    .note { font-size: .8em; color: #64748b; margin-top: 6px; } .err { color: #dc2626; }
+    pre { background: #0f172a; color: #22c55e; padding: 10px; border-radius: 6px; font-size: .8em; overflow: auto; }
+</style>
+</head>
+<body>
+<h2>🧪 Clinical Laboratory Data Analytics <span id="mode" class="tag">...</span></h2>
+<div class="sub">Dataset <code>data2/</code> — laboratory results (JSON Lines) + patient encounters (CSV). Data sintetis; kedatangan batch adalah <b>simulasi</b>.</div>
+<div class="bar">
+    <a class="btn alt" href="/">⬅ Dashboard utama</a>
+    <button onclick="loadAll()">⬇ Load semua batch (Volume)</button>
+    <button class="alt" onclick="refresh()">↻ Refresh</button>
+    <button class="warn" onclick="resetLab()">Reset data lab</button>
+    <span id="status" class="note"></span>
+</div>
+
+<div class="card"><h3>Volume <span class="tag">Landing zone, record, relasi</span></h3><div id="volume">memuat...</div></div>
+<div class="card"><h3>Velocity <span class="tag">Kedatangan batch &amp; latensi (simulasi)</span></h3>
+    <div class="note">Jalankan <code>python lab_batch_producer.py --reset --interval 5</code> di terminal lain, lalu klik Refresh.</div>
+    <div id="velocity">memuat...</div></div>
+<div class="card"><h3>Veracity <span class="tag">Kualitas data before / after</span></h3><div id="quality">memuat...</div></div>
+<div class="card"><h3>Value <span class="tag">Laboratory utilisation</span></h3><div id="value">memuat...</div></div>
+<div class="card"><h3>Computational complexity <span class="tag">A: agregasi vs B: join + temporal</span></h3>
+    <button onclick="compare()">Jalankan perbandingan (3x)</button><div id="complexity" class="note">Belum dijalankan.</div></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const fmt = n => (n === null || n === undefined) ? '-' : Number(n).toLocaleString('id-ID');
+const kpi = (label, val) => `<div class="kpi"><b>${val}</b><span>${label}</span></div>`;
+const table = (cols, rows) => `<div style="overflow-x:auto"><table><tr>${cols.map(c => `<th>${c[0]}</th>`).join('')}</tr>` +
+    rows.map(r => `<tr>${cols.map(c => `<td class="${c[2] || ''}">${c[1](r)}</td>`).join('')}</tr>`).join('') + '</table></div>';
+const bar = (pct, red) => `<div class="track"><div class="fill ${red ? 'red' : ''}" style="width:${Math.min(pct || 0, 100)}%"></div></div>`;
+async function api(path, opts) {
+    const r = await fetch(path, opts); const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || r.statusText); return j;
+}
+function setStatus(msg, bad) { $('status').innerHTML = bad ? `<span class="err">${msg}</span>` : msg; }
+
+async function loadVolume() {
+    try {
+        const o = await api('/api/lab/overview'); const e = o.encounters, l = o.lab_results, z = o.landing_zone;
+        $('mode').innerText = o.engine.toUpperCase();
+        $('volume').innerHTML = `<div class="grid">
+            ${kpi('Lab batch files (' + z.source + ')', z.lab_batch_files)}${kpi('Ukuran lab files (MB)', z.lab_total_size_mb)}
+            ${kpi('Encounters (raw)', fmt(e.raw_rows))}${kpi('Encounters (clean)', fmt(e.clean_rows))}
+            ${kpi('Lab rows ingested (raw)', fmt(l.raw_rows_ingested))}${kpi('Lab rows (clean)', fmt(l.clean_rows))}
+            ${kpi('Lab rows valid', fmt(l.valid_rows))}${kpi('Join match rate (%)', o.relationships.join_match_rate_pct ?? '-')}</div>
+            <div class="note">${o.relationships.join_key}</div>`;
+    } catch (err) { $('volume').innerHTML = `<span class="err">${err.message}</span>`; }
+}
+async function loadVelocity() {
+    try {
+        const b = await api('/api/lab/batches');
+        if (!b.log.length) { $('velocity').innerHTML = '<div class="note">Belum ada batch yang masuk.</div>'; return; }
+        $('velocity').innerHTML = `<div class="grid">${kpi('Batch masuk', b.batches_ingested)}
+            ${kpi('Rata-rata inter-arrival (s)', b.avg_inter_arrival_sec ?? '-')}
+            ${kpi('Rata-rata latensi proses (ms)', fmt(b.avg_processing_latency_ms))}${kpi('Latensi maks (ms)', fmt(b.max_processing_latency_ms))}</div>` +
+            table([['Batch', r => r.batch_id], ['Arrival', r => r.arrival_time], ['Gap (s)', r => r.inter_arrival_sec ?? '-', 'n'],
+                   ['Records', r => fmt(r.records), 'n'], ['Dedup', r => fmt(r.duplicates_removed), 'n'],
+                   ['Parse ms', r => fmt(r.parse_ms), 'n'], ['Clean ms', r => fmt(r.clean_ms), 'n'],
+                   ['Proses ms', r => fmt(r.processing_latency_ms), 'n'], ['Rec/s', r => fmt(r.throughput_rec_per_sec), 'n'],
+                   ['E2E ms', r => r.end_to_end_latency_ms ? fmt(r.end_to_end_latency_ms) : '-', 'n'],
+                   ['Event time (data)', r => `${r.event_time_min || '-'} → ${r.event_time_max || '-'}`]], b.log);
+    } catch (err) { $('velocity').innerHTML = `<span class="err">${err.message}</span>`; }
+}
+async function loadQuality() {
+    try {
+        const q = await api('/api/lab/quality'); const s = q.summary;
+        $('quality').innerHTML = `<div class="grid">${kpi('Raw ingested', fmt(s.raw_rows_ingested))}${kpi('Setelah dedup', fmt(s.after_deduplication))}
+            ${kpi('Valid (OK)', fmt(s.valid_rows))}${kpi('Dikecualikan', fmt(s.excluded_rows))}${kpi('Valid % dari clean', s.valid_pct_of_clean ?? '-')}</div>` +
+            table([['Masalah kualitas', r => r.issue], ['Dimensi', r => r.dimension], ['Before', r => fmt(r.before), 'n'],
+                   ['After', r => fmt(r.after), 'n'], ['Penanganan', r => r.handling]], q.issues) +
+            `<div class="note">${q.note}</div>`;
+    } catch (err) { $('quality').innerHTML = `<span class="err">${err.message}</span>`; }
+}
+async function loadValue() {
+    try {
+        const [a, b] = await Promise.all([api('/api/lab/analysis/simple'), api('/api/lab/analysis/relational')]);
+        const maxT = Math.max(...b.department_utilisation.map(d => d.lab_tests), 1);
+        const maxD = Math.max(...b.daily_utilisation.map(d => d.tests), 1);
+        const h = b.headline;
+        $('value').innerHTML = `<div class="note"><b>Pertanyaan:</b> ${b.question}</div>
+            <div class="note"><b>Operasi A</b> (${a.execution_time_sec}s) — encounter per departemen:
+              ${a.encounters_by_department.map(d => `${d.department} ${fmt(d.encounters)} (${d.pct}%)`).join(' · ')}</div>
+            <div class="note"><b>Operasi B</b> (${b.execution_time_sec}s) — join lab × encounters.
+              Volume tertinggi: <b>${h.highest_volume_department}</b> (${fmt(h.highest_volume_tests)} tes); abnormal tertinggi: <b>${h.highest_abnormal_department}</b> (${h.highest_abnormal_pct}%).</div>` +
+            table([['Departemen', r => r.department], ['Encounters', r => fmt(r.encounters_total), 'n'], ['Lab tests', r => fmt(r.lab_tests), 'n'],
+                   ['', r => bar(r.lab_tests * 100 / maxT)], ['Tes/encounter', r => r.tests_per_encounter, 'n'],
+                   ['Abnormal %', r => r.abnormal_pct, 'n'], ['Jam s/d hasil', r => r.avg_hours_to_result, 'n']], b.department_utilisation) +
+            '<h4>Utilisasi harian (tes valid per hari)</h4>' +
+            table([['Tanggal', r => r.day], ['Tes', r => fmt(r.tests), 'n'], ['', r => bar(r.tests * 100 / maxD)],
+                   ['Abnormal', r => fmt(r.abnormal_tests), 'n']], b.daily_utilisation) +
+            `<div class="note"><b>Keterbatasan:</b> ${b.limitations.join(' ')}</div>`;
+    } catch (err) { $('value').innerHTML = `<span class="err">${err.message}</span>`; }
+}
+async function compare() {
+    $('complexity').innerText = 'Menjalankan...';
+    try {
+        const c = await api('/api/lab/analysis/compare?repeats=3');
+        $('complexity').innerHTML = table([['Operasi', r => r[0]], ['Tabel', r => r[1], 'n'], ['Join', r => r[2], 'n'], ['Rata-rata (s)', r => r[3], 'n']],
+            [[c.operation_A.name, c.operation_A.input_tables, c.operation_A.joins, c.operation_A.avg_sec],
+             [c.operation_B.name, c.operation_B.input_tables, c.operation_B.joins, c.operation_B.avg_sec]]) +
+            `<div class="note">B ${c.slowdown_B_vs_A}× lebih lama dari A pada ${fmt(c.rows.encounters)} encounters × ${fmt(c.rows.lab_results)} hasil lab.</div>`;
+    } catch (err) { $('complexity').innerHTML = `<span class="err">${err.message}</span>`; }
+}
+async function loadAll() {
+    setStatus('Memuat semua batch...');
+    try { const r = await api('/api/lab/load-all', { method: 'POST' }); setStatus(`${r.batches_loaded} batch dimuat dalam ${r.total_seconds}s`); refresh(); }
+    catch (err) { setStatus(err.message, true); }
+}
+async function resetLab() { await api('/api/lab/reset', { method: 'POST' }); setStatus('Data lab dikosongkan.'); refresh(); }
+function refresh() { loadVolume(); loadVelocity(); loadQuality(); loadValue(); }
+window.onload = refresh;
+</script>
+</body>
+</html>

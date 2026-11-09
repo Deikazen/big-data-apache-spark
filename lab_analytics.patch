@@ -1,0 +1,1461 @@
+diff --git a/README.md b/README.md
+index 0d54214..d91bca6 100644
+--- a/README.md
++++ b/README.md
+@@ -47,6 +47,10 @@ flowchart LR
+ | `static/index.html` | Dashboard utama dan monitor real-time |
+ | `static/tables.html` | Preview 100 baris data pasien dan patologi |
+ | `stream_producer.py` | Simulator pengiriman data melalui HTTP |
++| `lab_engine.py` | Engine Clinical Laboratory Analytics untuk `data2/`: load, pembersihan, standarisasi satuan, query (Spark atau pandas/HDFS) |
++| `routers/lab_api.py` | Endpoint `/api/lab/*` (Volume, Velocity, Veracity, Value) |
++| `lab_batch_producer.py` | Simulator kedatangan batch hasil laboratorium (Velocity) |
++| `static/lab.html` | Dashboard lab di `/lab` |
+ | `docker-compose.yml` | NameNode dan DataNode HDFS minimal |
+ 
+ Pada mode Spark, `main.py` membuat `SparkSession` dengan `local[1]`,
+@@ -67,21 +71,26 @@ menggunakan dataset lokal sebagai fallback.
+ │   ├── lab_results_batch_1..5.json  # Data batch laboratorium tambahan
+ │   └── patient_encounters - Copy.csv
+ ├── routers/
++│   ├── lab_api.py
+ │   ├── analytics_api.py
+ │   ├── dataframe_api.py
+ │   ├── rdd_api.py
+ │   └── stream_api.py
+ ├── static/
+ │   ├── index.html
++│   ├── lab.html
+ │   └── tables.html
+ ├── docker-compose.yml
+ ├── main.py
++├── lab_engine.py
++├── lab_batch_producer.py
+ ├── stream_producer.py
+ └── README.md
+ ```
+ 
+-Dataset pada `data2/` belum direferensikan oleh `main.py` maupun router,
+-sehingga belum muncul pada dashboard atau endpoint yang tersedia.
++Dataset pada `data2/` diproses oleh modul Clinical Laboratory Analytics
++(`lab_engine.py` + `routers/lab_api.py`), lihat bagian
++[Clinical Laboratory Analytics](#clinical-laboratory-analytics-data2).
+ 
+ ## Dataset
+ 
+@@ -103,9 +112,77 @@ isinya dimuat sebagai list baris.
+ 
+ ### `data2/`
+ 
+-Berisi lima batch hasil laboratorium JSON Lines dan satu CSV patient
+-encounters. File ini merupakan data tambahan yang belum digunakan oleh
+-implementasi saat ini.
++Berisi lima batch hasil laboratorium JSON Lines (20.000 record per batch,
++JSON bersarang) dan satu CSV patient encounters (20.000 baris). Seluruh data
++bersifat sintetis. Disarankan mengganti nama CSV menjadi
++`patient_encounters.csv` (nama lama `patient_encounters - Copy.csv` tetap
++dikenali sebagai fallback).
++
++## Clinical Laboratory Analytics (data2)
++
++Studi kasus midterm IFB-451: **Clinical Laboratory Data Analytics**. Alurnya
++sama dengan pemrosesan folder `data/`, dengan dua engine yang dipilih oleh
++`EXEC_MODE`:
++
++```text
++data2/ (landing zone) -> load/ingest -> clean + standardise -> query -> /api/lab/* + /lab
++```
++
++| EXEC_MODE | Engine | Sumber data |
++|---|---|---|
++| `spark` | PySpark DataFrame + Spark SQL (`SparkLabStore`) | `data2/` lokal |
++| `hadoop` | `hdfs.InsecureClient` + pandas (`PandasLabStore`) | HDFS `/data2/`, fallback `data2/` lokal |
++
++Encounters (CSV) dimuat sekali saat startup. Hasil laboratorium (JSON Lines)
++masuk per batch lewat `POST /api/lab/batches` (simulasi kedatangan periodik)
++atau sekaligus lewat `POST /api/lab/load-all`.
++
++### Aturan kualitas data (Veracity)
++
++| Masalah di data | Penanganan | `quality_flag` |
++|---|---|---|
++| `lab_record_id` / `encounter_id` duplikat | dedup (dalam batch dan lintas batch) | - |
++| `result_value = null` | dikecualikan dari analitik | `PENDING_RESULT` |
++| `result_value = ""` | dikecualikan | `READ_ERROR` |
++| `result_value = -999` (sentinel) | dikecualikan | `CALIBRATION_ERROR` |
++| Timestamp hasil sebelum admission | dikecualikan | `TIMESTAMP_BEFORE_ADMISSION` |
++| Satuan campuran | glukosa mmol/L x 18,016 -> mg/dL; kreatinin umol/L / 88,4 -> mg/dL | - |
++
++Hanya baris `quality_flag = OK` yang masuk analitik. Dari 100.000 record mentah:
++3.000 duplikat dibuang, 6.000 dikecualikan, 91.000 valid.
++
++### Endpoint `/api/lab`
++
++| Endpoint | 5V | Fungsi |
++|---|---|---|
++| `GET /overview` | Volume | Jumlah record, ukuran file, relasi, join match rate |
++| `POST /load-all` | Volume | Bulk load semua batch dan ukur waktunya |
++| `POST /batches` | Velocity | Terima satu batch (`{batch_id, sent_at, records[]}`) |
++| `GET /batches` | Velocity | Log kedatangan, inter-arrival, latensi parse/clean/total |
++| `GET /quality` | Veracity | Before/after tiap masalah kualitas |
++| `GET /analysis/simple` | Value | Operasi A: encounter per departemen |
++| `GET /analysis/relational` | Value | Operasi B: join lab x encounters, per departemen/hari/diagnosis |
++| `GET /analysis/compare?repeats=3` | Volume | Waktu A vs B |
++| `GET /preview?limit=&flag=` | Variety | Record terintegrasi beserta `quality_flag` |
++| `POST /reset` | - | Kosongkan data lab (untuk mengulang demo) |
++
++### Menjalankan
++
++```powershell
++$env:EXEC_MODE = "spark"
++python -m uvicorn main:app
++# terminal lain: simulasi kedatangan batch (SIMULASI, bukan LIS asli)
++python lab_batch_producer.py --reset --interval 5
++# buka http://localhost:8000/lab
++```
++
++Untuk HDFS: salin `data2/` ke HDFS (`/data2`), lalu jalankan dengan
++`EXEC_MODE=hadoop`. Kolom `landing_zone.source` pada `/api/lab/overview`
++menunjukkan apakah data benar-benar terbaca dari `hdfs` atau jatuh ke `local`.
++
++Catatan teknis: `SparkLabStore` menurunkan `spark.sql.shuffle.partitions`
++menjadi 8 (variabel `SPARK_SHUFFLE_PARTITIONS`) dan memakai
++`localCheckpoint()` untuk memutus lineage antar batch.
+ 
+ ## Prasyarat dan Instalasi
+ 
+diff --git a/lab_batch_producer.py b/lab_batch_producer.py
+new file mode 100644
+index 0000000..b129199
+--- /dev/null
++++ b/lab_batch_producer.py
+@@ -0,0 +1,78 @@
++"""
++Simulasi kedatangan batch hasil laboratorium (Velocity) - SIMULASI, bukan LIS asli.
++----------------------------------------------------------------------------------
++Membaca data2/lab_results_batch_N.json (JSON Lines) lalu mengirim satu batch per
++interval ke POST /api/lab/batches. Server mengukur latensi pemrosesan tiap batch;
++producer mengukur round-trip time.
++
++Contoh:
++    python lab_batch_producer.py                       # 5 batch, jeda 10 detik
++    python lab_batch_producer.py --interval 5 --reset  # kosongkan data lab dulu
++    python lab_batch_producer.py --batches 1 2 3 --interval 3
++"""
++import argparse
++import glob
++import json
++import os
++import re
++import sys
++import time
++
++import requests
++
++DATA2_DIR = os.getenv("DATA2_DIR", "data2")
++
++
++def batch_files():
++    files = glob.glob(os.path.join(DATA2_DIR, "lab_results_batch_*.json"))
++    return sorted(files, key=lambda p: int(re.search(r"batch_(\d+)", p).group(1)))
++
++
++def main():
++    ap = argparse.ArgumentParser(description="Simulator kedatangan batch hasil lab")
++    ap.add_argument("--target", default="http://localhost:8000")
++    ap.add_argument("--interval", type=float, default=10.0, help="jeda antar batch (detik)")
++    ap.add_argument("--batches", type=int, nargs="*", help="nomor batch yang dikirim (default: semua)")
++    ap.add_argument("--reset", action="store_true", help="kosongkan data lab di server sebelum mulai")
++    args = ap.parse_args()
++
++    try:
++        mode = requests.get(f"{args.target}/api/mode", timeout=5).json()
++    except requests.RequestException as e:
++        sys.exit(f"[ERROR] Server tidak dapat dihubungi di {args.target}: {e}")
++    print(f"[INFO] Server aktif - mode: {mode.get('mode')} ({mode.get('engine')})")
++
++    files = batch_files()
++    if not files:
++        sys.exit(f"[ERROR] Tidak ada lab_results_batch_*.json di {DATA2_DIR}/")
++    if args.batches:
++        files = [f for f in files if int(re.search(r"batch_(\d+)", f).group(1)) in args.batches]
++
++    if args.reset:
++        requests.post(f"{args.target}/api/lab/reset", timeout=30)
++        print("[INFO] Data lab di server dikosongkan.")
++
++    print(f"[INFO] Mengirim {len(files)} batch, interval {args.interval}s (SIMULASI kedatangan periodik)\n")
++    print(f"{'batch':>5} {'records':>8} {'dedup':>6} {'server_ms':>10} {'rec/s':>9} {'e2e_ms':>9} {'roundtrip_ms':>13}")
++    for i, path in enumerate(files):
++        n = int(re.search(r"batch_(\d+)", path).group(1))
++        with open(path, encoding="utf-8") as fh:
++            records = [json.loads(line) for line in fh if line.strip()]
++        sent_at = time.time()
++        t0 = time.perf_counter()
++        res = requests.post(f"{args.target}/api/lab/batches", timeout=600,
++                            json={"batch_id": n, "sent_at": sent_at, "records": records})
++        rtt = (time.perf_counter() - t0) * 1000
++        if res.status_code != 200:
++            print(f"[ERROR] batch {n}: HTTP {res.status_code} {res.text[:200]}")
++            continue
++        b = res.json()["batch"]
++        print(f"{n:>5} {b['records']:>8} {b['duplicates_removed']:>6} {b['processing_latency_ms']:>10} "
++              f"{b['throughput_rec_per_sec']:>9} {b['end_to_end_latency_ms']:>9} {rtt:>13.1f}")
++        if i < len(files) - 1:
++            time.sleep(args.interval)
++    print("\n[DONE] Lihat ringkasan di http://localhost:8000/lab atau GET /api/lab/batches")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/lab_engine.py b/lab_engine.py
+new file mode 100644
+index 0000000..ff1d38c
+--- /dev/null
++++ b/lab_engine.py
+@@ -0,0 +1,869 @@
++"""
++Clinical Laboratory Data Analytics - engine pemrosesan data2/
++==============================================================
++Alur data (sama dengan pola folder data/ pada proyek ini):
++
++    data2/ (landing zone)  ->  load / ingest  ->  clean + standardise  ->  query  ->  API/dashboard
++
++Dua engine, dipilih oleh EXEC_MODE di main.py:
++    - SparkLabStore  : PySpark DataFrame + Spark SQL (EXEC_MODE=spark)
++    - PandasLabStore : HDFS client + pandas             (EXEC_MODE=hadoop)
++
++Kedua engine memakai aturan pembersihan yang SAMA (konstanta di bawah),
++sehingga hasil analitik dan waktu eksekusinya bisa dibandingkan secara adil.
++
++Sumber data:
++    - patient_encounters.csv        : CSV terstruktur (dimensi, dimuat sekali saat startup)
++    - lab_results_batch_N.json      : JSON Lines bersarang (fakta, datang per batch)
++"""
++
++import glob
++import json
++import math
++import os
++import re
++import time
++from collections import deque
++from datetime import date, datetime
++from decimal import Decimal
++from threading import Lock
++from typing import Any, Dict, List, Optional
++
++import numpy as np
++import pandas as pd
++
++# --------------------------------------------------------------------------
++# Konfigurasi lokasi data
++# --------------------------------------------------------------------------
++DATA2_DIR = os.getenv("DATA2_DIR", "data2")
++HDFS_DATA2_DIR = os.getenv("HDFS_DATA2_DIR", "/data2")
++ENCOUNTER_FILENAMES = ("patient_encounters.csv", "patient_encounters - Copy.csv")
++BATCH_GLOB = "lab_results_batch_*.json"
++
++# --------------------------------------------------------------------------
++# Aturan standarisasi (satu sumber kebenaran untuk kedua engine)
++# --------------------------------------------------------------------------
++# Satuan baku + rentang referensi per jenis tes (low, high); None = tidak ada batas.
++TEST_STANDARDS = {
++    "Blood Glucose": {"unit": "mg/dL",   "ref": (70.0, 140.0)},
++    "Creatinine":    {"unit": "mg/dL",   "ref": (0.6, 1.3)},
++    "Hemoglobin":    {"unit": "g/dL",    "ref": (12.0, 17.5)},
++    "WBC Count":     {"unit": "10^3/uL", "ref": (4.5, 11.0)},
++    "Lipid Panel":   {"unit": "mg/dL",   "ref": (None, 200.0)},
++}
++# (test_name, satuan_asal) -> faktor pengali menuju satuan baku
++UNIT_FACTORS = {
++    ("Blood Glucose", "mmol/L"): 18.016,      # mmol/L -> mg/dL
++    ("Creatinine", "umol/L"): 1.0 / 88.4,     # umol/L -> mg/dL
++}
++SENTINEL_VALUE = -999.0                        # kode error instrumen pada result_value
++
++QUALITY_FLAGS = (
++    "OK", "PENDING_RESULT", "READ_ERROR", "CALIBRATION_ERROR",
++    "UNPARSEABLE_RESULT", "UNKNOWN_UNIT", "ORPHAN_ENCOUNTER",
++    "TIMESTAMP_BEFORE_ADMISSION",
++)
++
++
++# --------------------------------------------------------------------------
++# Utilitas
++# --------------------------------------------------------------------------
++def _sanitize(obj: Any) -> Any:
++    """Ubah NaN/Inf/Timestamp/Decimal/numpy menjadi tipe yang aman untuk JSON."""
++    if isinstance(obj, dict):
++        return {str(k): _sanitize(v) for k, v in obj.items()}
++    if isinstance(obj, (list, tuple)):
++        return [_sanitize(v) for v in obj]
++    if isinstance(obj, (np.integer,)):
++        return int(obj)
++    if isinstance(obj, (np.floating, float)):
++        f = float(obj)
++        return None if (math.isnan(f) or math.isinf(f)) else f
++    if isinstance(obj, Decimal):
++        return float(obj)
++    if isinstance(obj, (datetime, pd.Timestamp)):
++        return None if pd.isna(obj) else obj.strftime("%Y-%m-%d %H:%M:%S")
++    if isinstance(obj, date):
++        return obj.isoformat()
++    if obj is pd.NaT:
++        return None
++    return obj
++
++
++def _iso(ts: float) -> str:
++    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
++
++
++def _batch_number(path: str) -> int:
++    m = re.search(r"batch_(\d+)", os.path.basename(path))
++    return int(m.group(1)) if m else 0
++
++
++def _local_encounter_path() -> Optional[str]:
++    for name in ENCOUNTER_FILENAMES:
++        p = os.path.join(DATA2_DIR, name)
++        if os.path.exists(p):
++            return p
++    return None
++
++
++def _local_batch_files() -> List[str]:
++    return sorted(glob.glob(os.path.join(DATA2_DIR, BATCH_GLOB)), key=_batch_number)
++
++
++def _pct(part: float, whole: float) -> Optional[float]:
++    return round(part * 100.0 / whole, 2) if whole else None
++
++
++# --------------------------------------------------------------------------
++# Fragmen SQL yang dibangkitkan dari konstanta (bukan dari input pengguna)
++# --------------------------------------------------------------------------
++def _sql_unit_known() -> str:
++    parts = [f"(test_name = '{t}' AND unit_raw = '{s['unit']}')" for t, s in TEST_STANDARDS.items()]
++    parts += [f"(test_name = '{t}' AND unit_raw = '{u}')" for (t, u) in UNIT_FACTORS]
++    return "(" + " OR ".join(parts) + ")"
++
++
++def _sql_unit_std() -> str:
++    whens = " ".join(f"WHEN test_name = '{t}' THEN '{s['unit']}'" for t, s in TEST_STANDARDS.items())
++    return f"CASE {whens} ELSE NULL END"
++
++
++def _sql_result_std() -> str:
++    whens = " ".join(
++        f"WHEN test_name = '{t}' AND unit_raw = '{u}' THEN result_num * {f}"
++        for (t, u), f in UNIT_FACTORS.items()
++    )
++    return f"CASE {whens} ELSE result_num END"
++
++
++def _sql_ref(idx: int) -> str:
++    whens = " ".join(
++        f"WHEN test_name = '{t}' THEN {s['ref'][idx] if s['ref'][idx] is not None else 'NULL'}"
++        for t, s in TEST_STANDARDS.items()
++    )
++    return f"CASE {whens} ELSE NULL END"
++
++
++# ==========================================================================
++# Basis: logika bersama (logging batch, ringkasan, bentuk response)
++# ==========================================================================
++class BaseLabStore:
++    engine_name = "base"
++
++    def __init__(self):
++        self.lock = Lock()
++        self.batch_log: deque = deque(maxlen=100)
++        self.last_arrival: Optional[float] = None
++        self.enc_raw_rows = 0
++        self.enc_dup_removed = 0
++        self.raw_total = 0
++        self.dup_removed = 0
++        self.landing_source = "local"
++
++    # ---- harus diimplementasikan oleh engine --------------------------------
++    def load_encounters(self) -> Dict[str, Any]: raise NotImplementedError
++    def _ingest_impl(self, kind: str, data: Any) -> Dict[str, Any]: raise NotImplementedError
++    def _reset_labs(self) -> None: raise NotImplementedError
++    def _enc_stats(self) -> Dict[str, Any]: raise NotImplementedError
++    def _lab_stats(self) -> Dict[str, Any]: raise NotImplementedError
++    def _flag_counts(self) -> Dict[str, int]: raise NotImplementedError
++    def _unit_conversion_counts(self) -> List[Dict[str, Any]]: raise NotImplementedError
++    def _valid_set_checks(self) -> Dict[str, int]: raise NotImplementedError
++    def _simple_agg(self) -> Dict[str, Any]: raise NotImplementedError
++    def _relational(self) -> Dict[str, Any]: raise NotImplementedError
++    def _preview(self, limit: int, flag: Optional[str]) -> List[Dict[str, Any]]: raise NotImplementedError
++    def landing_zone_files(self) -> List[Dict[str, Any]]: raise NotImplementedError
++
++    # ---- ingest dengan pengukuran Velocity ----------------------------------
++    def ingest(self, kind: str, data: Any, batch_id: Optional[int] = None,
++               source: str = "producer", sent_at: Optional[float] = None) -> Dict[str, Any]:
++        arrival = time.time()
++        with self.lock:
++            t0 = time.perf_counter()
++            r = self._ingest_impl(kind, data)
++            total_ms = (time.perf_counter() - t0) * 1000.0
++            finished = time.time()
++
++            gap = None if self.last_arrival is None else round(arrival - self.last_arrival, 3)
++            self.last_arrival = arrival
++            self.raw_total += r["raw_rows"]
++            self.dup_removed += r["duplicates_removed"]
++
++            entry = {
++                "batch_id": batch_id if batch_id is not None else len(self.batch_log) + 1,
++                "source": source,
++                "engine": self.engine_name,
++                "arrival_time": _iso(arrival),
++                "inter_arrival_sec": gap,
++                "records": r["raw_rows"],
++                "duplicates_removed": r["duplicates_removed"],
++                "clean_rows": r["clean_rows"],
++                "event_time_min": r.get("event_min"),
++                "event_time_max": r.get("event_max"),
++                "parse_ms": round(r["parse_ms"], 2),
++                "clean_ms": round(r["clean_ms"], 2),
++                "merge_ms": round(r["merge_ms"], 2),
++                "processing_latency_ms": round(total_ms, 2),
++                "throughput_rec_per_sec": round(r["raw_rows"] / (total_ms / 1000.0), 1) if total_ms > 0 else None,
++                "end_to_end_latency_ms": round((finished - sent_at) * 1000.0, 2) if sent_at else None,
++            }
++            self.batch_log.append(entry)
++            return _sanitize(entry)
++
++    def reset(self) -> None:
++        with self.lock:
++            self._reset_labs()
++            self.batch_log.clear()
++            self.last_arrival = None
++            self.raw_total = 0
++            self.dup_removed = 0
++
++    def load_all(self) -> Dict[str, Any]:
++        """Bulk load historis semua batch dari landing zone (demonstrasi Volume)."""
++        files = self.landing_zone_files()
++        t0 = time.perf_counter()
++        entries = []
++        for f in files:
++            entries.append(self.ingest("file", f["batch"], batch_id=f["batch"], source="landing-zone"))
++        return {
++            "batches_loaded": len(entries),
++            "total_seconds": round(time.perf_counter() - t0, 3),
++            "batches": entries,
++        }
++
++    def batches(self) -> Dict[str, Any]:
++        log = list(self.batch_log)
++        gaps = [b["inter_arrival_sec"] for b in log if b["inter_arrival_sec"] is not None]
++        lats = [b["processing_latency_ms"] for b in log]
++        return _sanitize({
++            "engine": self.engine_name,
++            "batches_ingested": len(log),
++            "avg_inter_arrival_sec": round(sum(gaps) / len(gaps), 3) if gaps else None,
++            "avg_processing_latency_ms": round(sum(lats) / len(lats), 2) if lats else None,
++            "max_processing_latency_ms": round(max(lats), 2) if lats else None,
++            "log": log,
++        })
++
++    # ---- Volume --------------------------------------------------------------
++    def overview(self) -> Dict[str, Any]:
++        enc = self._enc_stats()
++        lab = self._lab_stats()
++        files = self.landing_zone_files()
++        total_bytes = sum(f["size_bytes"] for f in files)
++        lab_rows = lab["clean_rows"]
++        matched = lab["rows_matching_encounter"]
++        return _sanitize({
++            "engine": self.engine_name,
++            "landing_zone": {
++                "source": self.landing_source,
++                "lab_batch_files": len(files),
++                "lab_total_size_mb": round(total_bytes / 1024 / 1024, 2),
++                "files": files,
++            },
++            "encounters": {
++                "raw_rows": self.enc_raw_rows,
++                "duplicates_removed": self.enc_dup_removed,
++                "clean_rows": enc["clean_rows"],
++                "distinct_patients": enc["distinct_patients"],
++                "admission_min": enc["admission_min"],
++                "admission_max": enc["admission_max"],
++            },
++            "lab_results": {
++                "raw_rows_ingested": self.raw_total,
++                "duplicates_removed": self.dup_removed,
++                "clean_rows": lab_rows,
++                "valid_rows": lab["valid_rows"],
++                "distinct_encounters_with_labs": lab["distinct_encounters"],
++                "avg_valid_tests_per_encounter_with_labs": (
++                    round(lab["valid_rows"] / lab["distinct_encounters"], 2) if lab["distinct_encounters"] else None),
++            },
++            "relationships": {
++                "join_key": "lab_results.encounter_id -> encounters.encounter_id (many-to-one)",
++                "lab_rows_matching_encounter": matched,
++                "join_match_rate_pct": _pct(matched, lab_rows),
++            },
++        })
++
++    # ---- Veracity ------------------------------------------------------------
++    def quality(self) -> Dict[str, Any]:
++        flags = self._flag_counts()
++        total = sum(flags.values())
++        checks = self._valid_set_checks()
++        conv = self._unit_conversion_counts()
++        conv_total = sum(c["rows"] for c in conv)
++        valid = flags.get("OK", 0)
++
++        def issue(name, dimension, before, after, handling):
++            return {"issue": name, "dimension": dimension, "before": before, "after": after, "handling": handling}
++
++        issues = [
++            issue("Duplicate lab records (same lab_record_id)", "uniqueness",
++                  self.dup_removed, checks["duplicate_lab_ids"],
++                  "Drop duplicates by lab_record_id (keep first), also across batches"),
++            issue("Duplicate encounters (same encounter_id)", "uniqueness",
++                  self.enc_dup_removed, checks["duplicate_encounter_ids"],
++                  "Drop duplicates by encounter_id (rows are identical)"),
++            issue("Pending results (result_value = null)", "completeness",
++                  flags.get("PENDING_RESULT", 0), checks["null_or_sentinel_in_valid"],
++                  "Flag PENDING_RESULT; excluded from analytics"),
++            issue("Instrument read errors (result_value = empty string)", "validity",
++                  flags.get("READ_ERROR", 0), checks["null_or_sentinel_in_valid"],
++                  "Flag READ_ERROR; excluded from analytics"),
++            issue("Calibration errors (sentinel -999)", "validity",
++                  flags.get("CALIBRATION_ERROR", 0), checks["null_or_sentinel_in_valid"],
++                  "Flag CALIBRATION_ERROR; sentinel never treated as a measurement"),
++            issue("Timestamp before admission", "consistency",
++                  flags.get("TIMESTAMP_BEFORE_ADMISSION", 0), checks["ts_before_admission_in_valid"],
++                  "Flag TIMESTAMP_BEFORE_ADMISSION; excluded from temporal analysis"),
++            issue("Inconsistent units (mmol/L, umol/L)", "consistency",
++                  conv_total, 0,
++                  "Convert to standard unit: glucose mmol/L x 18.016 -> mg/dL; creatinine umol/L / 88.4 -> mg/dL"),
++        ]
++        for extra, label in (("UNKNOWN_UNIT", "Unknown unit for test"), ("ORPHAN_ENCOUNTER", "Lab without matching encounter"),
++                             ("UNPARSEABLE_RESULT", "Non-numeric result")):
++            if flags.get(extra, 0):
++                issues.append(issue(label, "validity", flags[extra], 0, f"Flag {extra}; excluded"))
++        return _sanitize({
++            "engine": self.engine_name,
++            "summary": {
++                "raw_rows_ingested": self.raw_total,
++                "after_deduplication": total,
++                "valid_rows": valid,
++                "excluded_rows": total - valid,
++                "valid_pct_of_clean": _pct(valid, total),
++                "retained_pct_of_raw": _pct(valid, self.raw_total),
++            },
++            "flag_distribution": [{"quality_flag": k, "rows": flags.get(k, 0), "pct": _pct(flags.get(k, 0), total)}
++                                  for k in QUALITY_FLAGS if flags.get(k, 0)],
++            "issues": issues,
++            "unit_conversions": conv,
++            "note": "'before' = problem count found in ingested data; 'after' = same problem measured inside the "
++                    "valid (quality_flag = OK) set. Error-type counts are measured after de-duplication.",
++        })
++
++    # ---- Value (+ kompleksitas) ---------------------------------------------
++    def simple_agg(self) -> Dict[str, Any]:
++        t0 = time.perf_counter()
++        res = self._simple_agg()
++        res["execution_time_sec"] = round(time.perf_counter() - t0, 4)
++        res.update({"operation": "A - Simple aggregation", "input_tables": 1, "joins": 0,
++                    "operations": "GROUP BY + COUNT on encounters"})
++        return _sanitize(res)
++
++    def relational(self) -> Dict[str, Any]:
++        t0 = time.perf_counter()
++        res = self._relational()
++        res["execution_time_sec"] = round(time.perf_counter() - t0, 4)
++        res.update({"operation": "B - Relational and temporal analysis", "input_tables": 2, "joins": 4,
++                    "operations": "JOIN lab_results x encounters, CASE flags, GROUP BY department/test/day/diagnosis, "
++                                  "timestamp arithmetic"})
++        return _sanitize(res)
++
++    def compare(self, repeats: int = 3) -> Dict[str, Any]:
++        repeats = max(1, min(repeats, 10))
++        self.simple_agg(); self.relational()  # warm-up (JIT/cache) tidak dihitung
++        a = [self.simple_agg()["execution_time_sec"] for _ in range(repeats)]
++        b = [self.relational()["execution_time_sec"] for _ in range(repeats)]
++        lab = self._lab_stats()
++        enc = self._enc_stats()
++        avg_a, avg_b = sum(a) / len(a), sum(b) / len(b)
++        return _sanitize({
++            "engine": self.engine_name,
++            "repeats": repeats,
++            "rows": {"encounters": enc["clean_rows"], "lab_results": lab["clean_rows"]},
++            "operation_A": {"name": "Simple aggregation", "input_tables": 1, "joins": 0,
++                            "avg_sec": round(avg_a, 4), "runs_sec": a},
++            "operation_B": {"name": "Relational + temporal", "input_tables": 2, "joins": 4,
++                            "avg_sec": round(avg_b, 4), "runs_sec": b},
++            "slowdown_B_vs_A": round(avg_b / avg_a, 2) if avg_a > 0 else None,
++        })
++
++    def preview(self, limit: int = 100, flag: Optional[str] = None) -> Dict[str, Any]:
++        rows = self._preview(limit, flag)
++        return _sanitize({"engine": self.engine_name, "flag": flag, "count": len(rows), "data": rows})
++
++
++# ==========================================================================
++# Engine 1: Apache Spark (EXEC_MODE=spark)
++# ==========================================================================
++class SparkLabStore(BaseLabStore):
++    engine_name = "spark"
++
++    def __init__(self, spark):
++        super().__init__()
++        from pyspark.sql.types import StructType, StructField, StringType, IntegerType
++        self.spark = spark
++        # Default 200 partisi shuffle sangat boros di local[1] (tiap shuffle = 200 task kecil).
++        # Dataset ini hanya ~100 ribu baris, jadi cukup 8 partisi.
++        spark.conf.set("spark.sql.shuffle.partitions", os.getenv("SPARK_SHUFFLE_PARTITIONS", "8"))
++        self.enc_df = None
++        self.lab_df = None
++        self._enc_schema = StructType([
++            StructField("encounter_id", StringType()), StructField("patient_id", StringType()),
++            StructField("age", IntegerType()), StructField("gender", StringType()),
++            StructField("department", StringType()), StructField("admission_timestamp", StringType()),
++            StructField("diagnosis_code", StringType()),
++        ])
++        # result_value bertipe campuran di sumber (float / "" / null / -999) -> dibaca sebagai string,
++        # lalu di-cast aman pada tahap pembersihan.
++        self._lab_schema = StructType([
++            StructField("lab_record_id", StringType()), StructField("encounter_id", StringType()),
++            StructField("test_batch_timestamp", StringType()),
++            StructField("test_details", StructType([
++                StructField("test_name", StringType()), StructField("result_value", StringType()),
++                StructField("unit", StringType()), StructField("reference_range", StringType())])),
++            StructField("instrument_metadata", StructType([
++                StructField("analyzer_id", StringType()), StructField("status", StringType())])),
++        ])
++
++    # -- startup ---------------------------------------------------------------
++    def load_encounters(self):
++        path = _local_encounter_path()
++        if not path:
++            raise FileNotFoundError(f"patient_encounters.csv tidak ditemukan di {DATA2_DIR}/")
++        raw = self.spark.read.csv(os.path.abspath(path), header=True, schema=self._enc_schema)
++        self.enc_raw_rows = raw.count()
++        clean = (raw.dropDuplicates(["encounter_id"])
++                 .selectExpr("encounter_id", "patient_id", "age", "gender", "department", "diagnosis_code",
++                             "try_cast(admission_timestamp AS TIMESTAMP) AS admission_ts")
++                 .cache())
++        n = clean.count()
++        self.enc_dup_removed = self.enc_raw_rows - n
++        self.enc_df = clean
++        clean.createOrReplaceTempView("encounters")
++        return {"encounters_raw": self.enc_raw_rows, "encounters_clean": n, "duplicates_removed": self.enc_dup_removed}
++
++    # -- ingest ------------------------------------------------------------------
++    def _flatten(self, raw):
++        return raw.selectExpr(
++            "lab_record_id", "encounter_id",
++            "try_cast(test_batch_timestamp AS TIMESTAMP) AS test_ts",
++            "test_details.test_name AS test_name", "test_details.result_value AS result_raw",
++            "test_details.unit AS unit_raw", "instrument_metadata.analyzer_id AS analyzer_id",
++            "instrument_metadata.status AS status")
++
++    def _ingest_impl(self, kind, data):
++        spark = self.spark
++        if self.enc_df is None:
++            raise RuntimeError("Encounters belum dimuat.")
++        # 1) PARSE (JSON bersarang -> DataFrame datar)
++        t = time.perf_counter()
++        if kind == "file":
++            path = next((f["path"] for f in self.landing_zone_files() if f["batch"] == data), None)
++            if not path:
++                raise FileNotFoundError(f"Batch {data} tidak ada di landing zone.")
++            raw = spark.read.schema(self._lab_schema).json(os.path.abspath(path))
++        else:
++            rdd = spark.sparkContext.parallelize([json.dumps(r) for r in data])
++            raw = spark.read.schema(self._lab_schema).json(rdd)
++        flat = self._flatten(raw).cache()
++        raw_rows = flat.count()
++        parse_ms = (time.perf_counter() - t) * 1000
++
++        # 2) CLEAN: dedup (dalam batch + lintas batch), flag kualitas, standarisasi satuan
++        t = time.perf_counter()
++        dedup = flat.dropDuplicates(["lab_record_id"])
++        if self.lab_df is not None:
++            dedup = dedup.join(self.lab_df.select("lab_record_id"), "lab_record_id", "left_anti")
++        dedup.createOrReplaceTempView("lab_new")
++        # localCheckpoint (eager) MEMUTUS lineage. Tanpa ini, plan batch ke-n memuat lab_df batch
++        # sebelumnya dua kali (union + anti-join) sehingga plan tumbuh eksponensial -> latensi naik & OOM.
++        clean = spark.sql(self._clean_sql()).localCheckpoint()
++        clean_rows = clean.count()
++        ev = clean.agg({"test_ts": "min"}).first()[0], clean.agg({"test_ts": "max"}).first()[0]
++        clean_ms = (time.perf_counter() - t) * 1000
++
++        # 3) MERGE ke tabel utama + view Spark SQL
++        t = time.perf_counter()
++        self.lab_df = clean if self.lab_df is None else self.lab_df.unionByName(clean)
++        self.lab_df.createOrReplaceTempView("lab_results")
++        merge_ms = (time.perf_counter() - t) * 1000
++        flat.unpersist()
++        return {"raw_rows": raw_rows, "duplicates_removed": raw_rows - clean_rows, "clean_rows": clean_rows,
++                "parse_ms": parse_ms, "clean_ms": clean_ms, "merge_ms": merge_ms,
++                "event_min": ev[0], "event_max": ev[1]}
++
++    def _clean_sql(self) -> str:
++        return f"""
++        WITH base AS (
++            SELECT n.lab_record_id, n.encounter_id, n.test_ts, n.test_name, n.result_raw, n.unit_raw,
++                   n.analyzer_id, n.status, e.admission_ts,
++                   try_cast(n.result_raw AS DOUBLE) AS result_num
++            FROM lab_new n LEFT JOIN encounters e ON n.encounter_id = e.encounter_id
++        ),
++        flagged AS (
++            SELECT *, CASE
++                WHEN status = 'PENDING_RESULT' OR result_raw IS NULL THEN 'PENDING_RESULT'
++                WHEN status = 'READ_ERROR' OR trim(result_raw) = '' THEN 'READ_ERROR'
++                WHEN status = 'CALIBRATION_ERROR' OR result_num = {SENTINEL_VALUE} THEN 'CALIBRATION_ERROR'
++                WHEN result_num IS NULL THEN 'UNPARSEABLE_RESULT'
++                WHEN NOT {_sql_unit_known()} THEN 'UNKNOWN_UNIT'
++                WHEN admission_ts IS NULL THEN 'ORPHAN_ENCOUNTER'
++                WHEN test_ts IS NULL OR test_ts < admission_ts THEN 'TIMESTAMP_BEFORE_ADMISSION'
++                ELSE 'OK' END AS quality_flag
++            FROM base
++        ),
++        std AS (
++            SELECT *, {_sql_unit_std()} AS unit_std,
++                   CASE WHEN quality_flag = 'OK' THEN {_sql_result_std()} END AS result_std,
++                   {_sql_ref(0)} AS ref_low, {_sql_ref(1)} AS ref_high
++            FROM flagged
++        )
++        SELECT lab_record_id, encounter_id, test_ts, admission_ts, test_name, result_raw, unit_raw,
++               unit_std, result_std, analyzer_id, status, quality_flag,
++               CASE WHEN quality_flag = 'OK' THEN
++                    CASE WHEN (ref_low IS NOT NULL AND result_std < ref_low)
++                           OR (ref_high IS NOT NULL AND result_std > ref_high) THEN 1 ELSE 0 END
++               END AS abnormal
++        FROM std
++        """
++
++    def _reset_labs(self):
++        if self.lab_df is not None:
++            self.lab_df.unpersist()
++        self.lab_df = None
++        self.spark.catalog.dropTempView("lab_results")
++
++    # -- statistik -----------------------------------------------------------------
++    def _rows(self, sql: str) -> List[Dict[str, Any]]:
++        return [r.asDict() for r in self.spark.sql(sql).collect()]
++
++    def _enc_stats(self):
++        r = self._rows("""SELECT COUNT(*) AS clean_rows, COUNT(DISTINCT patient_id) AS distinct_patients,
++                          MIN(admission_ts) AS admission_min, MAX(admission_ts) AS admission_max FROM encounters""")[0]
++        return r
++
++    def _lab_stats(self):
++        if self.lab_df is None:
++            return {"clean_rows": 0, "valid_rows": 0, "distinct_encounters": 0, "rows_matching_encounter": 0}
++        return self._rows("""SELECT COUNT(*) AS clean_rows,
++                  SUM(CASE WHEN quality_flag = 'OK' THEN 1 ELSE 0 END) AS valid_rows,
++                  COUNT(DISTINCT encounter_id) AS distinct_encounters,
++                  SUM(CASE WHEN admission_ts IS NOT NULL THEN 1 ELSE 0 END) AS rows_matching_encounter
++                  FROM lab_results""")[0]
++
++    def _flag_counts(self):
++        if self.lab_df is None:
++            return {}
++        return {r["quality_flag"]: r["n"] for r in self._rows(
++            "SELECT quality_flag, COUNT(*) AS n FROM lab_results GROUP BY quality_flag")}
++
++    def _unit_conversion_counts(self):
++        if self.lab_df is None:
++            return []
++        out = []
++        for (t, u), f in UNIT_FACTORS.items():
++            n = self._rows(f"SELECT COUNT(*) AS n FROM lab_results WHERE test_name = '{t}' AND unit_raw = '{u}'")[0]["n"]
++            out.append({"test_name": t, "from_unit": u, "to_unit": TEST_STANDARDS[t]["unit"], "factor": round(f, 6), "rows": n})
++        return out
++
++    def _valid_set_checks(self):
++        enc_dups = self._rows("SELECT COUNT(*) - COUNT(DISTINCT encounter_id) AS d FROM encounters")[0]["d"]
++        if self.lab_df is None:
++            return {"duplicate_lab_ids": 0, "duplicate_encounter_ids": enc_dups,
++                    "null_or_sentinel_in_valid": 0, "ts_before_admission_in_valid": 0}
++        r = self._rows(f"""SELECT COUNT(*) - COUNT(DISTINCT lab_record_id) AS dup_lab,
++                 SUM(CASE WHEN quality_flag = 'OK' AND (result_std IS NULL OR result_std = {SENTINEL_VALUE}) THEN 1 ELSE 0 END) AS bad_val,
++                 SUM(CASE WHEN quality_flag = 'OK' AND test_ts < admission_ts THEN 1 ELSE 0 END) AS bad_ts
++                 FROM lab_results""")[0]
++        return {"duplicate_lab_ids": r["dup_lab"], "duplicate_encounter_ids": enc_dups,
++                "null_or_sentinel_in_valid": r["bad_val"] or 0, "ts_before_admission_in_valid": r["bad_ts"] or 0}
++
++    # -- analitik -------------------------------------------------------------------
++    def _simple_agg(self):
++        rows = self._rows("""SELECT department, COUNT(*) AS encounters FROM encounters
++                             GROUP BY department ORDER BY encounters DESC""")
++        total = sum(r["encounters"] for r in rows)
++        for r in rows:
++            r["pct"] = _pct(r["encounters"], total)
++        return {"question": "How many encounters does each department handle?", "encounters_by_department": rows}
++
++    def _relational(self):
++        if self.lab_df is None:
++            raise RuntimeError("Belum ada data lab. Jalankan load-all atau stream batch dulu.")
++        base = "FROM lab_results l JOIN encounters e ON l.encounter_id = e.encounter_id WHERE l.quality_flag = 'OK'"
++        dept = self._rows(f"""
++            WITH enc_cnt AS (SELECT department, COUNT(*) AS encounters_total FROM encounters GROUP BY department)
++            SELECT e.department, c.encounters_total, COUNT(*) AS lab_tests,
++                   ROUND(COUNT(*) / c.encounters_total, 2) AS tests_per_encounter,
++                   ROUND(AVG(l.abnormal) * 100, 2) AS abnormal_pct,
++                   ROUND(AVG((unix_timestamp(l.test_ts) - unix_timestamp(e.admission_ts)) / 3600.0), 2) AS avg_hours_to_result
++            {base.replace('WHERE', 'JOIN enc_cnt c ON c.department = e.department WHERE')}
++            GROUP BY e.department, c.encounters_total ORDER BY lab_tests DESC""")
++        matrix = self._rows(f"""SELECT e.department, l.test_name, COUNT(*) AS tests, ROUND(AVG(l.abnormal) * 100, 2) AS abnormal_pct
++                                {base} GROUP BY e.department, l.test_name ORDER BY e.department, tests DESC""")
++        daily = self._rows(f"""SELECT CAST(DATE(l.test_ts) AS STRING) AS day, COUNT(*) AS tests, SUM(l.abnormal) AS abnormal_tests
++                               {base} GROUP BY DATE(l.test_ts) ORDER BY day""")
++        diag = self._rows(f"""SELECT e.diagnosis_code, l.test_name, COUNT(*) AS tests, ROUND(AVG(l.abnormal) * 100, 2) AS abnormal_pct
++                              {base} GROUP BY e.diagnosis_code, l.test_name ORDER BY e.diagnosis_code, l.test_name""")
++        return _relational_payload(dept, matrix, daily, diag)
++
++    def _preview(self, limit, flag):
++        if self.lab_df is None:
++            return []
++        where = ""
++        if flag:
++            if flag not in QUALITY_FLAGS:
++                raise ValueError(f"flag harus salah satu dari {QUALITY_FLAGS}")
++            where = f"WHERE quality_flag = '{flag}'"
++        return self._rows(f"""SELECT lab_record_id, encounter_id, test_ts, test_name, result_raw, unit_raw, unit_std,
++                              ROUND(result_std, 3) AS result_std, analyzer_id, status, quality_flag, abnormal
++                              FROM lab_results {where} LIMIT {int(limit)}""")
++
++    def landing_zone_files(self):
++        self.landing_source = "local"
++        return [{"batch": _batch_number(p), "name": os.path.basename(p), "path": p, "size_bytes": os.path.getsize(p)}
++                for p in _local_batch_files()]
++
++
++def _relational_payload(dept, matrix, daily, diag) -> Dict[str, Any]:
++    top = dept[0] if dept else None
++    hi = max(dept, key=lambda d: d["abnormal_pct"]) if dept else None
++    return {
++        "question": "Which departments drive laboratory utilisation, and how many results fall outside reference ranges?",
++        "department_utilisation": dept,
++        "department_x_test": matrix,
++        "daily_utilisation": daily,
++        "abnormal_by_diagnosis_test": diag,
++        "headline": ({"highest_volume_department": top["department"], "highest_volume_tests": top["lab_tests"],
++                      "highest_abnormal_department": hi["department"], "highest_abnormal_pct": hi["abnormal_pct"]}
++                     if top else None),
++        "limitations": ["Synthetic data: abnormal rates are not clinical prevalence.",
++                        "Only quality_flag = OK results are analysed; excluded rows may bias volumes.",
++                        "Reference ranges are a single adult range, not adjusted for age or sex."],
++    }
++
++
++# ==========================================================================
++# Engine 2: HDFS client + pandas (EXEC_MODE=hadoop)
++# ==========================================================================
++class PandasLabStore(BaseLabStore):
++    engine_name = "hadoop"
++
++    def __init__(self, hdfs_client=None):
++        super().__init__()
++        self.hdfs = hdfs_client
++        self.enc: Optional[pd.DataFrame] = None
++        self.lab: Optional[pd.DataFrame] = None
++
++    # -- baca dari HDFS, fallback ke lokal --------------------------------------
++    def _hdfs_list(self):
++        if self.hdfs is None:
++            return None
++        try:
++            items = self.hdfs.list(HDFS_DATA2_DIR, status=True)
++            return [(n, s["length"]) for n, s in items if re.match(r"lab_results_batch_\d+\.json$", n)]
++        except Exception:
++            return None
++
++    def landing_zone_files(self):
++        listed = self._hdfs_list()
++        if listed:
++            self.landing_source = "hdfs"
++            files = [{"batch": _batch_number(n), "name": n, "path": f"{HDFS_DATA2_DIR}/{n}", "size_bytes": sz} for n, sz in listed]
++        else:
++            self.landing_source = "local"
++            files = [{"batch": _batch_number(p), "name": os.path.basename(p), "path": p, "size_bytes": os.path.getsize(p)}
++                     for p in _local_batch_files()]
++        return sorted(files, key=lambda f: f["batch"])
++
++    def _read_batch_lines(self, batch: int) -> List[Dict[str, Any]]:
++        f = next((x for x in self.landing_zone_files() if x["batch"] == batch), None)
++        if not f:
++            raise FileNotFoundError(f"Batch {batch} tidak ada di landing zone.")
++        if self.landing_source == "hdfs":
++            with self.hdfs.read(f["path"], encoding="utf-8") as reader:
++                text = reader.read()
++        else:
++            with open(f["path"], encoding="utf-8") as fh:
++                text = fh.read()
++        return [json.loads(line) for line in text.splitlines() if line.strip()]
++
++    def load_encounters(self):
++        df = None
++        if self.hdfs is not None:
++            try:
++                for name in ENCOUNTER_FILENAMES:
++                    try:
++                        with self.hdfs.read(f"{HDFS_DATA2_DIR}/{name}", encoding="utf-8") as reader:
++                            df = pd.read_csv(reader)
++                        self.landing_source = "hdfs"
++                        break
++                    except Exception:
++                        continue
++            except Exception:
++                df = None
++        if df is None:
++            path = _local_encounter_path()
++            if not path:
++                raise FileNotFoundError(f"patient_encounters.csv tidak ditemukan di HDFS {HDFS_DATA2_DIR}/ maupun {DATA2_DIR}/")
++            df = pd.read_csv(path)
++            self.landing_source = "local"
++        self.enc_raw_rows = len(df)
++        df = df.drop_duplicates("encounter_id").copy()
++        df["admission_ts"] = pd.to_datetime(df["admission_timestamp"], errors="coerce")
++        self.enc = df.drop(columns=["admission_timestamp"]).reset_index(drop=True)
++        self.enc_dup_removed = self.enc_raw_rows - len(self.enc)
++        return {"encounters_raw": self.enc_raw_rows, "encounters_clean": len(self.enc), "duplicates_removed": self.enc_dup_removed}
++
++    # -- ingest -------------------------------------------------------------------
++    def _ingest_impl(self, kind, data):
++        if self.enc is None:
++            raise RuntimeError("Encounters belum dimuat.")
++        t = time.perf_counter()
++        records = self._read_batch_lines(data) if kind == "file" else data
++        flat = pd.json_normalize(records)
++        flat = flat.rename(columns={
++            "test_details.test_name": "test_name", "test_details.result_value": "result_raw",
++            "test_details.unit": "unit_raw", "instrument_metadata.analyzer_id": "analyzer_id",
++            "instrument_metadata.status": "status", "test_batch_timestamp": "test_ts"})
++        flat = flat[["lab_record_id", "encounter_id", "test_ts", "test_name", "result_raw", "unit_raw", "analyzer_id", "status"]]
++        raw_rows = len(flat)
++        parse_ms = (time.perf_counter() - t) * 1000
++
++        t = time.perf_counter()
++        flat = flat.drop_duplicates("lab_record_id")
++        if self.lab is not None:
++            flat = flat[~flat["lab_record_id"].isin(self.lab["lab_record_id"])]
++        clean = self._clean(flat)
++        clean_ms = (time.perf_counter() - t) * 1000
++
++        t = time.perf_counter()
++        self.lab = clean if self.lab is None else pd.concat([self.lab, clean], ignore_index=True)
++        merge_ms = (time.perf_counter() - t) * 1000
++        return {"raw_rows": raw_rows, "duplicates_removed": raw_rows - len(clean), "clean_rows": len(clean),
++                "parse_ms": parse_ms, "clean_ms": clean_ms, "merge_ms": merge_ms,
++                "event_min": clean["test_ts"].min(), "event_max": clean["test_ts"].max()}
++
++    def _clean(self, df: pd.DataFrame) -> pd.DataFrame:
++        df = df.reset_index(drop=True)  # wajib: index harus sejajar dengan hasil merge di bawah
++        df["test_ts"] = pd.to_datetime(df["test_ts"], errors="coerce")
++        rv = df["result_raw"]
++        is_null = rv.isna()
++        is_blank = rv.map(lambda v: isinstance(v, str) and v.strip() == "")
++        df["result_raw"] = rv.map(lambda v: None if v is None or (isinstance(v, float) and math.isnan(v)) else str(v))
++        result_num = pd.to_numeric(rv, errors="coerce")
++        df = df.merge(self.enc[["encounter_id", "admission_ts"]], on="encounter_id", how="left")
++
++        known = pd.Series(False, index=df.index)
++        for t, s in TEST_STANDARDS.items():
++            known |= (df["test_name"] == t) & (df["unit_raw"] == s["unit"])
++        for (t, u) in UNIT_FACTORS:
++            known |= (df["test_name"] == t) & (df["unit_raw"] == u)
++
++        conds = [
++            (df["status"] == "PENDING_RESULT") | is_null,
++            (df["status"] == "READ_ERROR") | is_blank,
++            (df["status"] == "CALIBRATION_ERROR") | (result_num == SENTINEL_VALUE),
++            result_num.isna(),
++            ~known,
++            df["admission_ts"].isna(),
++            df["test_ts"].isna() | (df["test_ts"] < df["admission_ts"]),
++        ]
++        names = ["PENDING_RESULT", "READ_ERROR", "CALIBRATION_ERROR", "UNPARSEABLE_RESULT", "UNKNOWN_UNIT",
++                 "ORPHAN_ENCOUNTER", "TIMESTAMP_BEFORE_ADMISSION"]
++        df["quality_flag"] = np.select(conds, names, default="OK")
++
++        factor = pd.Series(1.0, index=df.index)
++        for (t, u), f in UNIT_FACTORS.items():
++            factor = factor.where(~((df["test_name"] == t) & (df["unit_raw"] == u)), f)
++        ok = df["quality_flag"] == "OK"
++        df["unit_std"] = df["test_name"].map({t: s["unit"] for t, s in TEST_STANDARDS.items()})
++        df["result_std"] = (result_num * factor).where(ok)
++        low = df["test_name"].map({t: s["ref"][0] for t, s in TEST_STANDARDS.items()}).astype(float)
++        high = df["test_name"].map({t: s["ref"][1] for t, s in TEST_STANDARDS.items()}).astype(float)
++        abn = ((df["result_std"] < low) | (df["result_std"] > high)).astype(float)
++        df["abnormal"] = abn.where(ok)
++        return df[["lab_record_id", "encounter_id", "test_ts", "admission_ts", "test_name", "result_raw", "unit_raw",
++                   "unit_std", "result_std", "analyzer_id", "status", "quality_flag", "abnormal"]]
++
++    def _reset_labs(self):
++        self.lab = None
++
++    # -- statistik ----------------------------------------------------------------
++    def _enc_stats(self):
++        e = self.enc
++        return {"clean_rows": len(e), "distinct_patients": int(e["patient_id"].nunique()),
++                "admission_min": e["admission_ts"].min(), "admission_max": e["admission_ts"].max()}
++
++    def _lab_stats(self):
++        l = self.lab
++        if l is None:
++            return {"clean_rows": 0, "valid_rows": 0, "distinct_encounters": 0, "rows_matching_encounter": 0}
++        return {"clean_rows": len(l), "valid_rows": int((l["quality_flag"] == "OK").sum()),
++                "distinct_encounters": int(l["encounter_id"].nunique()),
++                "rows_matching_encounter": int(l["admission_ts"].notna().sum())}
++
++    def _flag_counts(self):
++        return {} if self.lab is None else {k: int(v) for k, v in self.lab["quality_flag"].value_counts().items()}
++
++    def _unit_conversion_counts(self):
++        if self.lab is None:
++            return []
++        return [{"test_name": t, "from_unit": u, "to_unit": TEST_STANDARDS[t]["unit"], "factor": round(f, 6),
++                 "rows": int(((self.lab["test_name"] == t) & (self.lab["unit_raw"] == u)).sum())}
++                for (t, u), f in UNIT_FACTORS.items()]
++
++    def _valid_set_checks(self):
++        enc_dups = int(len(self.enc) - self.enc["encounter_id"].nunique())
++        if self.lab is None:
++            return {"duplicate_lab_ids": 0, "duplicate_encounter_ids": enc_dups,
++                    "null_or_sentinel_in_valid": 0, "ts_before_admission_in_valid": 0}
++        l = self.lab
++        ok = l["quality_flag"] == "OK"
++        return {"duplicate_lab_ids": int(len(l) - l["lab_record_id"].nunique()), "duplicate_encounter_ids": enc_dups,
++                "null_or_sentinel_in_valid": int((ok & (l["result_std"].isna() | (l["result_std"] == SENTINEL_VALUE))).sum()),
++                "ts_before_admission_in_valid": int((ok & (l["test_ts"] < l["admission_ts"])).sum())}
++
++    # -- analitik -----------------------------------------------------------------
++    def _simple_agg(self):
++        g = self.enc.groupby("department").size().sort_values(ascending=False)
++        total = int(g.sum())
++        rows = [{"department": d, "encounters": int(n), "pct": _pct(n, total)} for d, n in g.items()]
++        return {"question": "How many encounters does each department handle?", "encounters_by_department": rows}
++
++    def _relational(self):
++        if self.lab is None:
++            raise RuntimeError("Belum ada data lab. Jalankan load-all atau stream batch dulu.")
++        v = self.lab[self.lab["quality_flag"] == "OK"].merge(
++            self.enc[["encounter_id", "department", "diagnosis_code"]], on="encounter_id", how="inner")
++        v["hours"] = (v["test_ts"] - v["admission_ts"]).dt.total_seconds() / 3600.0
++        enc_cnt = self.enc.groupby("department").size().rename("encounters_total")
++
++        d = v.groupby("department").agg(lab_tests=("lab_record_id", "size"), abnormal_pct=("abnormal", "mean"),
++                                        avg_hours_to_result=("hours", "mean")).join(enc_cnt).reset_index()
++        d["tests_per_encounter"] = (d["lab_tests"] / d["encounters_total"]).round(2)
++        d["abnormal_pct"] = (d["abnormal_pct"] * 100).round(2)
++        d["avg_hours_to_result"] = d["avg_hours_to_result"].round(2)
++        d = d.sort_values("lab_tests", ascending=False)[
++            ["department", "encounters_total", "lab_tests", "tests_per_encounter", "abnormal_pct", "avg_hours_to_result"]]
++
++        m = (v.groupby(["department", "test_name"]).agg(tests=("lab_record_id", "size"), abnormal_pct=("abnormal", "mean"))
++             .reset_index())
++        m["abnormal_pct"] = (m["abnormal_pct"] * 100).round(2)
++        m = m.sort_values(["department", "tests"], ascending=[True, False])
++
++        day = (v.assign(day=v["test_ts"].dt.strftime("%Y-%m-%d")).groupby("day")
++               .agg(tests=("lab_record_id", "size"), abnormal_tests=("abnormal", "sum")).reset_index().sort_values("day"))
++        day["abnormal_tests"] = day["abnormal_tests"].astype(int)
++
++        dg = (v.groupby(["diagnosis_code", "test_name"]).agg(tests=("lab_record_id", "size"), abnormal_pct=("abnormal", "mean"))
++              .reset_index())
++        dg["abnormal_pct"] = (dg["abnormal_pct"] * 100).round(2)
++        dg = dg.sort_values(["diagnosis_code", "test_name"])
++        return _relational_payload(d.to_dict("records"), m.to_dict("records"), day.to_dict("records"), dg.to_dict("records"))
++
++    def _preview(self, limit, flag):
++        if self.lab is None:
++            return []
++        l = self.lab
++        if flag:
++            if flag not in QUALITY_FLAGS:
++                raise ValueError(f"flag harus salah satu dari {QUALITY_FLAGS}")
++            l = l[l["quality_flag"] == flag]
++        cols = ["lab_record_id", "encounter_id", "test_ts", "test_name", "result_raw", "unit_raw", "unit_std",
++                "result_std", "analyzer_id", "status", "quality_flag", "abnormal"]
++        out = l[cols].head(int(limit)).copy()
++        out["result_std"] = out["result_std"].round(3)
++        return out.to_dict("records")
+diff --git a/main.py b/main.py
+index f1605d5..9e5e7f9 100644
+--- a/main.py
++++ b/main.py
+@@ -3,7 +3,8 @@ import pandas as pd
+ from fastapi import FastAPI
+ from fastapi.staticfiles import StaticFiles
+ from fastapi.responses import FileResponse
+-from routers import analytics_api, dataframe_api, rdd_api, stream_api
++from routers import analytics_api, dataframe_api, rdd_api, stream_api, lab_api
++from lab_engine import SparkLabStore, PandasLabStore
+ 
+ os.environ["PYSPARK_PYTHON"] = "python"
+ 
+@@ -43,6 +44,14 @@ if EXEC_MODE == "hadoop":
+             app.state.hadoop_text_data = []
+             app.state.hadoop_patients_df = pd.DataFrame()
+ 
++    # --- Clinical Laboratory Analytics (data2/): engine HDFS client + pandas ---
++    app.state.lab_store = PandasLabStore(getattr(app.state, "hdfs_client", None))
++    try:
++        print(f"[LAB] Encounters dimuat: {app.state.lab_store.load_encounters()}")
++    except Exception as e:
++        print(f"[WARN] Lab analytics tidak aktif (data2 belum siap): {e}")
++        app.state.lab_store = None
++
+ elif EXEC_MODE == "spark":
+     print(f"[MODE] Menjalankan mode: APACHE SPARK (Single-Thread / Safe Mode)")
+     from pyspark.sql import SparkSession
+@@ -62,10 +71,19 @@ elif EXEC_MODE == "spark":
+     df.createOrReplaceTempView("patients")
+     app.state.patients_spark_df = df
+ 
++    # --- Clinical Laboratory Analytics (data2/): engine Spark DataFrame + Spark SQL ---
++    app.state.lab_store = SparkLabStore(spark)
++    try:
++        print(f"[LAB] Encounters dimuat: {app.state.lab_store.load_encounters()}")
++    except Exception as e:
++        print(f"[WARN] Lab analytics tidak aktif (data2 belum siap): {e}")
++        app.state.lab_store = None
++
+ app.include_router(dataframe_api.router)
+ app.include_router(rdd_api.router)
+ app.include_router(analytics_api.router)
+ app.include_router(stream_api.router)
++app.include_router(lab_api.router)
+ app.mount("/static", StaticFiles(directory="static"), name="static")
+ 
+ 
+@@ -86,3 +104,8 @@ def serve_dashboard():
+ @app.get("/tables")
+ def serve_tables():
+     return FileResponse("static/tables.html")
++
++
++@app.get("/lab")
++def serve_lab_dashboard():
++    return FileResponse("static/lab.html")
+diff --git a/routers/analytics_api.py b/routers/analytics_api.py
+index 9cb891a..7cfd96e 100644
+--- a/routers/analytics_api.py
++++ b/routers/analytics_api.py
+@@ -4,7 +4,7 @@ from fastapi import APIRouter, Request
+ 
+ router = APIRouter(prefix="/api/analytics", tags=["Analytics"])
+ 
+-OPERATIONS = ("filter_data", "cari_teks", "stream_ingest")
++OPERATIONS = ("filter_data", "cari_teks", "stream_ingest", "lab_ingest", "lab_simple_agg", "lab_relational")
+ MODES = ("hadoop", "spark")
+ 
+ 
+diff --git a/routers/lab_api.py b/routers/lab_api.py
+new file mode 100644
+index 0000000..9d7eba9
+--- /dev/null
++++ b/routers/lab_api.py
+@@ -0,0 +1,132 @@
++"""
++Router Clinical Laboratory Data Analytics (data2/).
++
++Pemetaan endpoint -> 5V:
++    GET  /api/lab/overview              Volume   (jumlah record, ukuran file, relasi antar tabel)
++    POST /api/lab/load-all              Volume   (bulk load historis semua batch + ukuran waktu)
++    POST /api/lab/batches               Velocity (batch hasil lab datang periodik, diukur latensinya)
++    GET  /api/lab/batches               Velocity (log kedatangan, inter-arrival, latensi)
++    GET  /api/lab/quality               Veracity (before/after masalah kualitas data)
++    GET  /api/lab/analysis/simple       Value    (Operasi A: agregasi sederhana)
++    GET  /api/lab/analysis/relational   Value    (Operasi B: join + temporal)
++    GET  /api/lab/analysis/compare      Volume   (kompleksitas A vs B, rata-rata beberapa kali jalan)
++    GET  /api/lab/preview               Variety  (record terintegrasi + quality_flag)
++    POST /api/lab/reset                 utilitas demo
++"""
++import time
++from typing import Any, Dict, List, Optional
++
++from fastapi import APIRouter, HTTPException, Request
++from pydantic import BaseModel
++
++from routers.analytics_api import record_execution
++
++router = APIRouter(prefix="/api/lab", tags=["Lab Analytics"])
++
++
++class LabBatchPayload(BaseModel):
++    batch_id: Optional[int] = None
++    sent_at: Optional[float] = None          # epoch detik di sisi producer (untuk end-to-end latency)
++    records: List[Dict[str, Any]]            # satu record = satu baris JSON Lines dari data2/
++
++
++def _store(request: Request):
++    store = getattr(request.app.state, "lab_store", None)
++    if store is None:
++        raise HTTPException(status_code=503, detail="Lab store belum siap. Periksa log startup dan folder data2/.")
++    return store
++
++
++def _guard(fn):
++    try:
++        return fn()
++    except HTTPException:
++        raise
++    except (RuntimeError, ValueError, FileNotFoundError) as e:
++        raise HTTPException(status_code=400, detail=str(e))
++    except Exception as e:
++        raise HTTPException(status_code=500, detail=str(e))
++
++
++@router.get("/overview")
++def overview(request: Request):
++    store = _store(request)
++    return _guard(store.overview)
++
++
++@router.post("/load-all")
++def load_all(request: Request):
++    store = _store(request)
++    start = time.time()
++
++    def run():
++        result = store.load_all()
++        record_execution(request, "lab_ingest", time.time() - start)
++        return result
++    return _guard(run)
++
++
++@router.post("/batches")
++def ingest_batch(payload: LabBatchPayload, request: Request):
++    store = _store(request)
++    if not payload.records:
++        raise HTTPException(status_code=400, detail="records kosong.")
++    start = time.time()
++
++    def run():
++        entry = store.ingest("records", payload.records, batch_id=payload.batch_id,
++                             source="producer", sent_at=payload.sent_at)
++        record_execution(request, "lab_ingest", time.time() - start)
++        return {"status": "success", "batch": entry}
++    return _guard(run)
++
++
++@router.get("/batches")
++def batch_log(request: Request):
++    return _store(request).batches()
++
++
++@router.get("/quality")
++def quality(request: Request):
++    return _guard(_store(request).quality)
++
++
++@router.get("/analysis/simple")
++def analysis_simple(request: Request):
++    store = _store(request)
++
++    def run():
++        res = store.simple_agg()
++        record_execution(request, "lab_simple_agg", res["execution_time_sec"])
++        return res
++    return _guard(run)
++
++
++@router.get("/analysis/relational")
++def analysis_relational(request: Request):
++    store = _store(request)
++
++    def run():
++        res = store.relational()
++        record_execution(request, "lab_relational", res["execution_time_sec"])
++        return res
++    return _guard(run)
++
++
++@router.get("/analysis/compare")
++def analysis_compare(request: Request, repeats: int = 3):
++    store = _store(request)
++    return _guard(lambda: store.compare(repeats))
++
++
++@router.get("/preview")
++def preview(request: Request, limit: int = 100, flag: Optional[str] = None):
++    store = _store(request)
++    return _guard(lambda: store.preview(limit, flag))
++
++
++@router.post("/reset")
++def reset(request: Request):
++    store = _store(request)
++    store.reset()
++    return {"status": "reset", "message": "Data lab dikosongkan. Encounters tetap dimuat."}
+diff --git a/static/index.html b/static/index.html
+index 561217d..aee17ef 100644
+--- a/static/index.html
++++ b/static/index.html
+@@ -229,6 +229,7 @@
+ <body>
+     <h2>🩺 Dashboard Analisis Medis <span id="mode-badge" style="font-size: 0.6em; padding: 4px 10px; border-radius: 6px; background: #e2e8f0; color: #333; vertical-align: middle;">Memuat Mode...</span></h2>
+     <a href="/tables" class="nav-btn">Lihat Full Raw Data ➔</a>
++    <a href="/lab" class="nav-btn">Clinical Laboratory Analytics (data2) ➔</a>
+ 
+     <div class="container">
+ 
+@@ -587,7 +588,10 @@
+             const labels = {
+                 filter_data: 'Filter Data (DataFrame)',
+                 cari_teks: 'Cari Teks (RDD)',
+-                stream_ingest: 'Ingest Stream Real-Time'
++                stream_ingest: 'Ingest Stream Real-Time',
++                lab_ingest: 'Lab: Ingest Batch (data2)',
++                lab_simple_agg: 'Lab: Agregasi Sederhana (A)',
++                lab_relational: 'Lab: Join + Temporal (B)'
+             };
+             const values = ['spark', 'hadoop']
+                 .map(mode => operationData[mode].average_execution_time_sec)
+diff --git a/static/lab.html b/static/lab.html
+new file mode 100644
+index 0000000..1f45eda
+--- /dev/null
++++ b/static/lab.html
+@@ -0,0 +1,138 @@
++<!DOCTYPE html>
++<html lang="id">
++<head>
++<meta charset="UTF-8">
++<meta name="viewport" content="width=device-width, initial-scale=1.0">
++<title>Clinical Laboratory Data Analytics</title>
++<style>
++    body { font-family: 'Segoe UI', Arial, sans-serif; margin: 24px; background: #f8fafc; color: #1e293b; }
++    h2 { margin-bottom: 4px; } h3 { margin: 0 0 8px; }
++    .sub { color: #64748b; font-size: .9em; margin-bottom: 16px; }
++    .bar { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 20px; align-items: center; }
++    button, a.btn { padding: 8px 14px; border: 0; border-radius: 6px; background: #0284c7; color: #fff; cursor: pointer; text-decoration: none; font-size: .9em; }
++    button.alt { background: #64748b; } button.warn { background: #dc2626; }
++    .card { background: #fff; border-radius: 10px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
++    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
++    .kpi { background: #f1f5f9; border-radius: 8px; padding: 10px 12px; }
++    .kpi b { display: block; font-size: 1.35em; color: #0284c7; } .kpi span { font-size: .78em; color: #64748b; }
++    table { border-collapse: collapse; width: 100%; font-size: .85em; margin-top: 8px; }
++    th, td { border-bottom: 1px solid #e2e8f0; padding: 6px 8px; text-align: left; }
++    th { background: #f1f5f9; } td.n { text-align: right; font-variant-numeric: tabular-nums; }
++    .track { background: #e2e8f0; border-radius: 4px; height: 12px; min-width: 120px; }
++    .fill { background: #0284c7; height: 12px; border-radius: 4px; } .fill.red { background: #dc2626; }
++    .tag { display: inline-block; font-size: .72em; padding: 2px 8px; border-radius: 10px; background: #e0f2fe; color: #0369a1; margin-left: 6px; }
++    .note { font-size: .8em; color: #64748b; margin-top: 6px; } .err { color: #dc2626; }
++    pre { background: #0f172a; color: #22c55e; padding: 10px; border-radius: 6px; font-size: .8em; overflow: auto; }
++</style>
++</head>
++<body>
++<h2>🧪 Clinical Laboratory Data Analytics <span id="mode" class="tag">...</span></h2>
++<div class="sub">Dataset <code>data2/</code> — laboratory results (JSON Lines) + patient encounters (CSV). Data sintetis; kedatangan batch adalah <b>simulasi</b>.</div>
++<div class="bar">
++    <a class="btn alt" href="/">⬅ Dashboard utama</a>
++    <button onclick="loadAll()">⬇ Load semua batch (Volume)</button>
++    <button class="alt" onclick="refresh()">↻ Refresh</button>
++    <button class="warn" onclick="resetLab()">Reset data lab</button>
++    <span id="status" class="note"></span>
++</div>
++
++<div class="card"><h3>Volume <span class="tag">Landing zone, record, relasi</span></h3><div id="volume">memuat...</div></div>
++<div class="card"><h3>Velocity <span class="tag">Kedatangan batch &amp; latensi (simulasi)</span></h3>
++    <div class="note">Jalankan <code>python lab_batch_producer.py --reset --interval 5</code> di terminal lain, lalu klik Refresh.</div>
++    <div id="velocity">memuat...</div></div>
++<div class="card"><h3>Veracity <span class="tag">Kualitas data before / after</span></h3><div id="quality">memuat...</div></div>
++<div class="card"><h3>Value <span class="tag">Laboratory utilisation</span></h3><div id="value">memuat...</div></div>
++<div class="card"><h3>Computational complexity <span class="tag">A: agregasi vs B: join + temporal</span></h3>
++    <button onclick="compare()">Jalankan perbandingan (3x)</button><div id="complexity" class="note">Belum dijalankan.</div></div>
++
++<script>
++const $ = id => document.getElementById(id);
++const fmt = n => (n === null || n === undefined) ? '-' : Number(n).toLocaleString('id-ID');
++const kpi = (label, val) => `<div class="kpi"><b>${val}</b><span>${label}</span></div>`;
++const table = (cols, rows) => `<div style="overflow-x:auto"><table><tr>${cols.map(c => `<th>${c[0]}</th>`).join('')}</tr>` +
++    rows.map(r => `<tr>${cols.map(c => `<td class="${c[2] || ''}">${c[1](r)}</td>`).join('')}</tr>`).join('') + '</table></div>';
++const bar = (pct, red) => `<div class="track"><div class="fill ${red ? 'red' : ''}" style="width:${Math.min(pct || 0, 100)}%"></div></div>`;
++async function api(path, opts) {
++    const r = await fetch(path, opts); const j = await r.json();
++    if (!r.ok) throw new Error(j.detail || r.statusText); return j;
++}
++function setStatus(msg, bad) { $('status').innerHTML = bad ? `<span class="err">${msg}</span>` : msg; }
++
++async function loadVolume() {
++    try {
++        const o = await api('/api/lab/overview'); const e = o.encounters, l = o.lab_results, z = o.landing_zone;
++        $('mode').innerText = o.engine.toUpperCase();
++        $('volume').innerHTML = `<div class="grid">
++            ${kpi('Lab batch files (' + z.source + ')', z.lab_batch_files)}${kpi('Ukuran lab files (MB)', z.lab_total_size_mb)}
++            ${kpi('Encounters (raw)', fmt(e.raw_rows))}${kpi('Encounters (clean)', fmt(e.clean_rows))}
++            ${kpi('Lab rows ingested (raw)', fmt(l.raw_rows_ingested))}${kpi('Lab rows (clean)', fmt(l.clean_rows))}
++            ${kpi('Lab rows valid', fmt(l.valid_rows))}${kpi('Join match rate (%)', o.relationships.join_match_rate_pct ?? '-')}</div>
++            <div class="note">${o.relationships.join_key}</div>`;
++    } catch (err) { $('volume').innerHTML = `<span class="err">${err.message}</span>`; }
++}
++async function loadVelocity() {
++    try {
++        const b = await api('/api/lab/batches');
++        if (!b.log.length) { $('velocity').innerHTML = '<div class="note">Belum ada batch yang masuk.</div>'; return; }
++        $('velocity').innerHTML = `<div class="grid">${kpi('Batch masuk', b.batches_ingested)}
++            ${kpi('Rata-rata inter-arrival (s)', b.avg_inter_arrival_sec ?? '-')}
++            ${kpi('Rata-rata latensi proses (ms)', fmt(b.avg_processing_latency_ms))}${kpi('Latensi maks (ms)', fmt(b.max_processing_latency_ms))}</div>` +
++            table([['Batch', r => r.batch_id], ['Arrival', r => r.arrival_time], ['Gap (s)', r => r.inter_arrival_sec ?? '-', 'n'],
++                   ['Records', r => fmt(r.records), 'n'], ['Dedup', r => fmt(r.duplicates_removed), 'n'],
++                   ['Parse ms', r => fmt(r.parse_ms), 'n'], ['Clean ms', r => fmt(r.clean_ms), 'n'],
++                   ['Proses ms', r => fmt(r.processing_latency_ms), 'n'], ['Rec/s', r => fmt(r.throughput_rec_per_sec), 'n'],
++                   ['E2E ms', r => r.end_to_end_latency_ms ? fmt(r.end_to_end_latency_ms) : '-', 'n'],
++                   ['Event time (data)', r => `${r.event_time_min || '-'} → ${r.event_time_max || '-'}`]], b.log);
++    } catch (err) { $('velocity').innerHTML = `<span class="err">${err.message}</span>`; }
++}
++async function loadQuality() {
++    try {
++        const q = await api('/api/lab/quality'); const s = q.summary;
++        $('quality').innerHTML = `<div class="grid">${kpi('Raw ingested', fmt(s.raw_rows_ingested))}${kpi('Setelah dedup', fmt(s.after_deduplication))}
++            ${kpi('Valid (OK)', fmt(s.valid_rows))}${kpi('Dikecualikan', fmt(s.excluded_rows))}${kpi('Valid % dari clean', s.valid_pct_of_clean ?? '-')}</div>` +
++            table([['Masalah kualitas', r => r.issue], ['Dimensi', r => r.dimension], ['Before', r => fmt(r.before), 'n'],
++                   ['After', r => fmt(r.after), 'n'], ['Penanganan', r => r.handling]], q.issues) +
++            `<div class="note">${q.note}</div>`;
++    } catch (err) { $('quality').innerHTML = `<span class="err">${err.message}</span>`; }
++}
++async function loadValue() {
++    try {
++        const [a, b] = await Promise.all([api('/api/lab/analysis/simple'), api('/api/lab/analysis/relational')]);
++        const maxT = Math.max(...b.department_utilisation.map(d => d.lab_tests), 1);
++        const maxD = Math.max(...b.daily_utilisation.map(d => d.tests), 1);
++        const h = b.headline;
++        $('value').innerHTML = `<div class="note"><b>Pertanyaan:</b> ${b.question}</div>
++            <div class="note"><b>Operasi A</b> (${a.execution_time_sec}s) — encounter per departemen:
++              ${a.encounters_by_department.map(d => `${d.department} ${fmt(d.encounters)} (${d.pct}%)`).join(' · ')}</div>
++            <div class="note"><b>Operasi B</b> (${b.execution_time_sec}s) — join lab × encounters.
++              Volume tertinggi: <b>${h.highest_volume_department}</b> (${fmt(h.highest_volume_tests)} tes); abnormal tertinggi: <b>${h.highest_abnormal_department}</b> (${h.highest_abnormal_pct}%).</div>` +
++            table([['Departemen', r => r.department], ['Encounters', r => fmt(r.encounters_total), 'n'], ['Lab tests', r => fmt(r.lab_tests), 'n'],
++                   ['', r => bar(r.lab_tests * 100 / maxT)], ['Tes/encounter', r => r.tests_per_encounter, 'n'],
++                   ['Abnormal %', r => r.abnormal_pct, 'n'], ['Jam s/d hasil', r => r.avg_hours_to_result, 'n']], b.department_utilisation) +
++            '<h4>Utilisasi harian (tes valid per hari)</h4>' +
++            table([['Tanggal', r => r.day], ['Tes', r => fmt(r.tests), 'n'], ['', r => bar(r.tests * 100 / maxD)],
++                   ['Abnormal', r => fmt(r.abnormal_tests), 'n']], b.daily_utilisation) +
++            `<div class="note"><b>Keterbatasan:</b> ${b.limitations.join(' ')}</div>`;
++    } catch (err) { $('value').innerHTML = `<span class="err">${err.message}</span>`; }
++}
++async function compare() {
++    $('complexity').innerText = 'Menjalankan...';
++    try {
++        const c = await api('/api/lab/analysis/compare?repeats=3');
++        $('complexity').innerHTML = table([['Operasi', r => r[0]], ['Tabel', r => r[1], 'n'], ['Join', r => r[2], 'n'], ['Rata-rata (s)', r => r[3], 'n']],
++            [[c.operation_A.name, c.operation_A.input_tables, c.operation_A.joins, c.operation_A.avg_sec],
++             [c.operation_B.name, c.operation_B.input_tables, c.operation_B.joins, c.operation_B.avg_sec]]) +
++            `<div class="note">B ${c.slowdown_B_vs_A}× lebih lama dari A pada ${fmt(c.rows.encounters)} encounters × ${fmt(c.rows.lab_results)} hasil lab.</div>`;
++    } catch (err) { $('complexity').innerHTML = `<span class="err">${err.message}</span>`; }
++}
++async function loadAll() {
++    setStatus('Memuat semua batch...');
++    try { const r = await api('/api/lab/load-all', { method: 'POST' }); setStatus(`${r.batches_loaded} batch dimuat dalam ${r.total_seconds}s`); refresh(); }
++    catch (err) { setStatus(err.message, true); }
++}
++async function resetLab() { await api('/api/lab/reset', { method: 'POST' }); setStatus('Data lab dikosongkan.'); refresh(); }
++function refresh() { loadVolume(); loadVelocity(); loadQuality(); loadValue(); }
++window.onload = refresh;
++</script>
++</body>
++</html>

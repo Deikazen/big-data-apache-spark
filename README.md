@@ -47,6 +47,10 @@ flowchart LR
 | `static/index.html` | Dashboard utama dan monitor real-time |
 | `static/tables.html` | Preview 100 baris data pasien dan patologi |
 | `stream_producer.py` | Simulator pengiriman data melalui HTTP |
+| `lab_engine.py` | Engine Clinical Laboratory Analytics untuk `data2/`: load, pembersihan, standarisasi satuan, query (Spark atau pandas/HDFS) |
+| `routers/lab_api.py` | Endpoint `/api/lab/*` (Volume, Velocity, Veracity, Value) |
+| `lab_batch_producer.py` | Simulator kedatangan batch hasil laboratorium (Velocity) |
+| `static/lab.html` | Dashboard lab di `/lab` |
 | `docker-compose.yml` | NameNode dan DataNode HDFS minimal |
 
 Pada mode Spark, `main.py` membuat `SparkSession` dengan `local[1]`,
@@ -67,21 +71,26 @@ menggunakan dataset lokal sebagai fallback.
 │   ├── lab_results_batch_1..5.json  # Data batch laboratorium tambahan
 │   └── patient_encounters - Copy.csv
 ├── routers/
+│   ├── lab_api.py
 │   ├── analytics_api.py
 │   ├── dataframe_api.py
 │   ├── rdd_api.py
 │   └── stream_api.py
 ├── static/
 │   ├── index.html
+│   ├── lab.html
 │   └── tables.html
 ├── docker-compose.yml
 ├── main.py
+├── lab_engine.py
+├── lab_batch_producer.py
 ├── stream_producer.py
 └── README.md
 ```
 
-Dataset pada `data2/` belum direferensikan oleh `main.py` maupun router,
-sehingga belum muncul pada dashboard atau endpoint yang tersedia.
+Dataset pada `data2/` diproses oleh modul Clinical Laboratory Analytics
+(`lab_engine.py` + `routers/lab_api.py`), lihat bagian
+[Clinical Laboratory Analytics](#clinical-laboratory-analytics-data2).
 
 ## Dataset
 
@@ -103,9 +112,77 @@ isinya dimuat sebagai list baris.
 
 ### `data2/`
 
-Berisi lima batch hasil laboratorium JSON Lines dan satu CSV patient
-encounters. File ini merupakan data tambahan yang belum digunakan oleh
-implementasi saat ini.
+Berisi lima batch hasil laboratorium JSON Lines (20.000 record per batch,
+JSON bersarang) dan satu CSV patient encounters (20.000 baris). Seluruh data
+bersifat sintetis. Disarankan mengganti nama CSV menjadi
+`patient_encounters.csv` (nama lama `patient_encounters - Copy.csv` tetap
+dikenali sebagai fallback).
+
+## Clinical Laboratory Analytics (data2)
+
+Studi kasus midterm IFB-451: **Clinical Laboratory Data Analytics**. Alurnya
+sama dengan pemrosesan folder `data/`, dengan dua engine yang dipilih oleh
+`EXEC_MODE`:
+
+```text
+data2/ (landing zone) -> load/ingest -> clean + standardise -> query -> /api/lab/* + /lab
+```
+
+| EXEC_MODE | Engine | Sumber data |
+|---|---|---|
+| `spark` | PySpark DataFrame + Spark SQL (`SparkLabStore`) | `data2/` lokal |
+| `hadoop` | `hdfs.InsecureClient` + pandas (`PandasLabStore`) | HDFS `/data2/`, fallback `data2/` lokal |
+
+Encounters (CSV) dimuat sekali saat startup. Hasil laboratorium (JSON Lines)
+masuk per batch lewat `POST /api/lab/batches` (simulasi kedatangan periodik)
+atau sekaligus lewat `POST /api/lab/load-all`.
+
+### Aturan kualitas data (Veracity)
+
+| Masalah di data | Penanganan | `quality_flag` |
+|---|---|---|
+| `lab_record_id` / `encounter_id` duplikat | dedup (dalam batch dan lintas batch) | - |
+| `result_value = null` | dikecualikan dari analitik | `PENDING_RESULT` |
+| `result_value = ""` | dikecualikan | `READ_ERROR` |
+| `result_value = -999` (sentinel) | dikecualikan | `CALIBRATION_ERROR` |
+| Timestamp hasil sebelum admission | dikecualikan | `TIMESTAMP_BEFORE_ADMISSION` |
+| Satuan campuran | glukosa mmol/L x 18,016 -> mg/dL; kreatinin umol/L / 88,4 -> mg/dL | - |
+
+Hanya baris `quality_flag = OK` yang masuk analitik. Dari 100.000 record mentah:
+3.000 duplikat dibuang, 6.000 dikecualikan, 91.000 valid.
+
+### Endpoint `/api/lab`
+
+| Endpoint | 5V | Fungsi |
+|---|---|---|
+| `GET /overview` | Volume | Jumlah record, ukuran file, relasi, join match rate |
+| `POST /load-all` | Volume | Bulk load semua batch dan ukur waktunya |
+| `POST /batches` | Velocity | Terima satu batch (`{batch_id, sent_at, records[]}`) |
+| `GET /batches` | Velocity | Log kedatangan, inter-arrival, latensi parse/clean/total |
+| `GET /quality` | Veracity | Before/after tiap masalah kualitas |
+| `GET /analysis/simple` | Value | Operasi A: encounter per departemen |
+| `GET /analysis/relational` | Value | Operasi B: join lab x encounters, per departemen/hari/diagnosis |
+| `GET /analysis/compare?repeats=3` | Volume | Waktu A vs B |
+| `GET /preview?limit=&flag=` | Variety | Record terintegrasi beserta `quality_flag` |
+| `POST /reset` | - | Kosongkan data lab (untuk mengulang demo) |
+
+### Menjalankan
+
+```powershell
+$env:EXEC_MODE = "spark"
+python -m uvicorn main:app
+# terminal lain: simulasi kedatangan batch (SIMULASI, bukan LIS asli)
+python lab_batch_producer.py --reset --interval 5
+# buka http://localhost:8000/lab
+```
+
+Untuk HDFS: salin `data2/` ke HDFS (`/data2`), lalu jalankan dengan
+`EXEC_MODE=hadoop`. Kolom `landing_zone.source` pada `/api/lab/overview`
+menunjukkan apakah data benar-benar terbaca dari `hdfs` atau jatuh ke `local`.
+
+Catatan teknis: `SparkLabStore` menurunkan `spark.sql.shuffle.partitions`
+menjadi 8 (variabel `SPARK_SHUFFLE_PARTITIONS`) dan memakai
+`localCheckpoint()` untuk memutus lineage antar batch.
 
 ## Prasyarat dan Instalasi
 

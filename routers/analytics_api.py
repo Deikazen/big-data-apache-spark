@@ -4,7 +4,7 @@ from fastapi import APIRouter, Request
 
 router = APIRouter(prefix="/api/analytics", tags=["Analytics"])
 
-OPERATIONS = ("filter_data", "cari_teks", "stream_ingest")
+OPERATIONS = ("filter_data", "cari_teks", "stream_ingest", "lab_ingest", "lab_simple_agg", "lab_relational")
 MODES = ("hadoop", "spark")
 
 
