@@ -7,7 +7,9 @@ Dashboard analitik data medis berbasis **FastAPI**, **Apache Spark**, dan
 - menampilkan preview dataset terstruktur dan tidak terstruktur;
 - mencari kata kunci pada laporan patologi;
 - menerima data pasien dan teks patologi secara real-time;
-- membandingkan waktu pemrosesan antar-engine secara in-memory.
+- membandingkan waktu pemrosesan antar-engine secara in-memory;
+- menganalisis data hasil laboratorium dengan dimensi Volume, Velocity,
+  Variety, Veracity, dan Value.
 
 > Proyek ini ditujukan untuk demonstrasi/laboratorium. Belum tersedia
 > autentikasi, database aplikasi, persistence data streaming, atau konfigurasi
@@ -17,22 +19,34 @@ Dashboard analitik data medis berbasis **FastAPI**, **Apache Spark**, dan
 
 ```mermaid
 flowchart LR
-    Browser["Dashboard HTML/CSS/JS"] --> API["FastAPI + Uvicorn"]
-    API --> Patients["DataFrame API"]
-    API --> Pathology["RDD/Text API"]
-    API --> Stream["Streaming API"]
-    API --> Metrics["Analytics API"]
+    Browser["Browser<br/>Dashboard /, /tables, /lab"] --> API["FastAPI + Uvicorn"]
 
-    Patients --> Engine{"EXEC_MODE"}
-    Pathology --> Engine
-    Stream --> Engine
-    Engine -->|spark| Spark["SparkSession local[1]"]
-    Engine -->|hadoop| Hadoop["HDFS client + pandas/list"]
+    API --> Core["Core API routers"]
+    Core --> Patients["/api/patients<br/>DataFrame API"]
+    Core --> Pathology["/api/pathology<br/>RDD/Text API"]
+    Core --> Stream["/api/stream<br/>In-memory streaming"]
+    Core --> Metrics["/api/analytics<br/>Execution metrics"]
 
-    Spark --> CSV1["data/breast_cancer_data.csv"]
-    Spark --> CSV2["data/mtsamples.csv"]
-    Hadoop --> HDFS["HDFS /data/*.csv"]
-    Hadoop -. fallback .-> Local["Dataset lokal"]
+    API --> LabAPI["/api/lab/*<br/>Clinical Laboratory API"]
+    LabAPI --> LabEngine["lab_engine.py<br/>clean + standardise + query"]
+
+    Core --> Engine{"EXEC_MODE"}
+    Engine -->|spark| Spark["SparkSession<br/>local[1]"]
+    Engine -->|hadoop| Hadoop["HDFS client<br/>+ pandas/list"]
+
+    Spark --> DataLocal["data/<br/>breast_cancer_data.csv<br/>mtsamples.csv"]
+    Hadoop --> HDFSData["HDFS /data/*"]
+    Hadoop -. fallback .-> DataLocal
+
+    LabEngine -->|spark| SparkLab["SparkLabStore<br/>Spark DataFrame + SQL"]
+    LabEngine -->|hadoop| PandasLab["PandasLabStore<br/>HDFS + pandas"]
+    SparkLab --> LabLocal["data2/<br/>encounters + JSON batches"]
+    PandasLab --> HDFSLab["HDFS /data2"]
+    PandasLab -. fallback .-> LabLocal
+
+    LabBatch["lab_batch_producer.py"] -->|POST /api/lab/batches| LabAPI
+    StreamProducer["stream_producer.py"] -->|POST /api/stream/*| Stream
+    HDFS["docker-compose.yml<br/>NameNode + DataNode"] --> HDFSData
 ```
 
 ### Komponen utama
@@ -53,12 +67,18 @@ flowchart LR
 | `static/lab.html` | Dashboard lab di `/lab` |
 | `docker-compose.yml` | NameNode dan DataNode HDFS minimal |
 
-Pada mode Spark, `main.py` membuat `SparkSession` dengan `local[1]`,
-memuat `mtsamples.csv` sebagai `RDD[String]`, dan membuat temporary view
-`patients` dari `breast_cancer_data.csv`. Pada mode Hadoop, file dibaca
-melalui `hdfs.InsecureClient` dan diproses menggunakan list Python serta
-pandas. Jika HDFS gagal diakses dan kedua CSV tersedia secara lokal, aplikasi
-menggunakan dataset lokal sebagai fallback.
+`main.py` membaca `EXEC_MODE` dan mendukung `spark` atau `hadoop` (default:
+`spark`). Pada mode Spark, aplikasi membuat `SparkSession` dengan `local[1]`,
+memuat `mtsamples.csv` sebagai `RDD[String]`, membuat temporary view `patients`
+dari `breast_cancer_data.csv`, dan memakai `SparkLabStore` untuk `data2/`.
+Pada mode Hadoop, file utama dibaca melalui `hdfs.InsecureClient` dan
+diproses menggunakan list Python serta pandas; `PandasLabStore` membaca
+encounters dan batch lab dari HDFS. Dataset `data/` maupun `data2/` dapat
+fallback ke file lokal ketika HDFS tidak tersedia.
+
+Data streaming dan metrik eksekusi hanya disimpan di memori proses FastAPI.
+Data batch lab yang diterima melalui API diproses oleh `lab_engine.py`, tetapi
+tidak dipersistenkan kembali ke CSV atau HDFS.
 
 ## Struktur Proyek
 
@@ -212,7 +232,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ## Menjalankan Aplikasi
 
 Jalankan dari root repository. `EXEC_MODE` membaca mode dari environment
-variable dan default-nya adalah `hadoop`.
+variable dan default-nya adalah `spark`.
 
 ### Mode Spark
 
@@ -243,6 +263,7 @@ Halaman yang tersedia:
 |---|---|
 | <http://localhost:8000/> | Dashboard utama |
 | <http://localhost:8000/tables> | Preview dataset |
+| <http://localhost:8000/lab> | Dashboard Clinical Laboratory Analytics |
 | <http://localhost:8000/docs> | Swagger UI |
 | <http://localhost:8000/redoc> | ReDoc |
 | <http://localhost:8000/api/mode> | Mode dan engine aktif |
